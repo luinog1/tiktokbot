@@ -1,7 +1,7 @@
 import re
 import os
 import sys
-from os import system
+import subprocess
 from time import sleep
 
 from selenium import webdriver
@@ -17,7 +17,8 @@ _HEADLESS_MODE = not sys.stdin.isatty() or os.environ.get("RENDER")
 class Bot:
 
     def __init__(self):
-        system("cls || clear")
+        if not _HEADLESS_MODE:
+            subprocess.run("clear", shell=True)
 
         self._print_banner()
         self.driver = self._init_driver()
@@ -57,13 +58,24 @@ class Bot:
             print("[~] Loading driver, please wait...")
 
             options = webdriver.FirefoxOptions()
-            options.binary_location = "/usr/bin/firefox"
+
+            # Detecta o binário disponível (firefox-esr em Debian/Ubuntu)
+            for binary in ["/usr/bin/firefox-esr", "/usr/bin/firefox"]:
+                if os.path.exists(binary):
+                    options.binary_location = binary
+                    break
+
+            # Headless nativo do Firefox — mais confiável que xvfb-run em containers
+            options.add_argument("--headless")
             options.add_argument("--width=800")
             options.add_argument("--height=700")
+            # Evita erros de sandbox e shared memory em containers
+            options.add_argument("--no-sandbox")
+            options.add_argument("--disable-dev-shm-usage")
 
-            service = webdriver.FirefoxService(log_output="geckodriver.log")
-            service.path = (
-                "/usr/local/bin/geckodriver"  # Make sure the path is correct
+            service = webdriver.FirefoxService(
+                executable_path="/usr/local/bin/geckodriver",
+                log_output=sys.stdout,  # log do geckodriver na stdout do container
             )
 
             driver = webdriver.Firefox(options=options, service=service)
