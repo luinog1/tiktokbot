@@ -9,8 +9,8 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     curl \
     && rm -rf /var/lib/apt/lists/*
 
-# Instala o Geckodriver manualmente (evita totalmente o Selenium Manager)
-RUN GECKODRIVER_VERSION=$(curl -s https://api.github.com/repos/mozilla/geckodriver/releases/latest | grep -oP '"tag_name": "\K[^"]*') \
+# Instala o Geckodriver usando Python para parsear a versão mais recente da API do GitHub
+RUN GECKODRIVER_VERSION=$(curl -s https://api.github.com/repos/mozilla/geckodriver/releases/latest | python3 -c "import sys, json; print(json.load(sys.stdin)['tag_name'])") \
     && wget -q "https://github.com/mozilla/geckodriver/releases/download/${GECKODRIVER_VERSION}/geckodriver-${GECKODRIVER_VERSION}-linux64.tar.gz" \
     && tar -xzf geckodriver-*.tar.gz -C /usr/local/bin \
     && chmod +x /usr/local/bin/geckodriver \
@@ -33,6 +33,6 @@ RUN chmod +x /docker-entrypoint.sh
 # Porta padrão do Render
 EXPOSE 10000
 
-# Define o entrypoint e o comando padrão (ajuste "bot.py" se o nome do arquivo for diferente, ex: "main.py")
+# Entrypoint e comando (ajuste "bot.py" se o nome do seu arquivo for diferente)
 ENTRYPOINT ["/docker-entrypoint.sh"]
 CMD ["python", "bot.py"]
