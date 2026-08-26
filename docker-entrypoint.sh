@@ -5,6 +5,14 @@ echo "Starting Firefox/Selenium environment..."
 
 export MOZ_HEADLESS=1
 export DISPLAY=:99
+# Desabilita sandbox de processos do Firefox — containers sem CAP_SYS_ADMIN
+# nao conseguem escrever em /proc/self/uid_map (EPERM -> SIGSEGV -> crash)
+export MOZ_DISABLE_CONTENT_SANDBOX=1
+export MOZ_DISABLE_GMP_SANDBOX=1
+export MOZ_DISABLE_GPU_SANDBOX=1
+export MOZ_DISABLE_RDD_SANDBOX=1
+export MOZ_DISABLE_SOCKET_PROCESS_SANDBOX=1
+export MOZ_CRASHREPORTER_DISABLE=1
 
 if ! command -v geckodriver &> /dev/null; then
     echo "ERROR: geckodriver not found in PATH."
