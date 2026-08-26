@@ -1,10 +1,17 @@
 import re
+import os
+import sys
 from os import system
 from time import sleep
 
 from selenium import webdriver
 from selenium.webdriver.common.by import By
 from selenium.common.exceptions import NoSuchElementException
+
+# Modo headless/Render: lê configuração de variáveis de ambiente
+# TIKTOK_SERVICE: número do serviço (1-7), ex: "4" para Views
+# TIKTOK_VIDEO_URL: URL do vídeo, ex: "https://www.tiktok.com/@user/video/123"
+_HEADLESS_MODE = not sys.stdin.isatty() or os.environ.get("RENDER")
 
 
 class Bot:
@@ -141,6 +148,18 @@ class Bot:
         print("\n")
 
     def _choose_service(self):
+        if _HEADLESS_MODE:
+            env_choice = os.environ.get("TIKTOK_SERVICE", "4")
+            try:
+                choice = int(env_choice)
+            except ValueError:
+                print("[!] TIKTOK_SERVICE inválido, usando Views (4)")
+                choice = 4
+            key = list(self.services.keys())[choice - 1]
+            print("[+] Serviço selecionado via env: {}".format(self.services[key]["title"]))
+            print("\n")
+            return key
+
         while True:
             try:
                 choice = int(input("[~] Choose an option : "))
@@ -167,6 +186,15 @@ class Bot:
         return key
 
     def _choose_video_url(self):
+        if _HEADLESS_MODE:
+            video_url = os.environ.get("TIKTOK_VIDEO_URL", "")
+            if not video_url:
+                print("[!] ERRO: defina a env var TIKTOK_VIDEO_URL com a URL do vídeo")
+                sys.exit(1)
+            print("[+] URL do vídeo via env: {}".format(video_url))
+            print("\n")
+            return video_url
+
         video_url = input("[~] Video URL : ")
         print("\n")
 
