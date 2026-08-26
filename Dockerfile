@@ -29,4 +29,4 @@ RUN chmod +x /docker-entrypoint.sh
 
 ENTRYPOINT ["/docker-entrypoint.sh"]
 
-CMD ["xvfb-run", "--auto-servernum", "--server-args=-screen 0 1280x1024x24", "python", "bot.py"]
+CMD ["python", "-u", "bot.py"]
