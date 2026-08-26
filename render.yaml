@@ -11,3 +11,5 @@ services:
         value: "1"
       - key: MOZ_HEADLESS
         value: "1"
+      - key: TESSERACT_CMD
+        value: "/usr/bin/tesseract"
