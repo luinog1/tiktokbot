@@ -2,10 +2,9 @@ FROM python:3.11-slim-bookworm
 
 ENV PYTHONDONTWRITEBYTECODE=1 \
     PYTHONUNBUFFERED=1 \
-    MOZ_HEADLESS=1 \
-    DEBIAN_FRONTEND=noninteractive
+    DEBIAN_FRONTEND=noninteractive \
+    MOZ_HEADLESS=1
 
-# Firefox + virtual display for Selenium.
 RUN apt-get update && apt-get install -y --no-install-recommends \
     firefox-esr \
     xvfb \
@@ -16,8 +15,8 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 
 WORKDIR /app
 
-COPY requirements.txt .
-RUN pip install --no-cache-dir -r requirements.txt
+RUN pip install --no-cache-dir \
+    selenium==4.11.0
 
 COPY . .
 
