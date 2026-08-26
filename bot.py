@@ -65,17 +65,26 @@ class Bot:
                     options.binary_location = binary
                     break
 
-            # Headless nativo do Firefox — mais confiável que xvfb-run em containers
-            options.add_argument("--headless")
-            options.add_argument("--width=800")
-            options.add_argument("--height=700")
-            # Evita erros de sandbox e shared memory em containers
-            options.add_argument("--no-sandbox")
-            options.add_argument("--disable-dev-shm-usage")
+            # Headless nativo do Firefox
+            options.add_argument("-headless")
+
+            # Desabilita sandbox via about:config — necessário em containers
+            # sem CAP_SYS_ADMIN (Render, Heroku, etc.)
+            options.set_preference("security.sandbox.content.level", 0)
+            options.set_preference("security.sandbox.gpu.level", 0)
+            options.set_preference("security.sandbox.media.level", 0)
+            options.set_preference("security.sandbox.content.tempdir.level", 0)
+            # Desabilita crash reporter que mata o processo quando filho crasha
+            options.set_preference("browser.tabs.crashReporting.sendReport", False)
+            options.set_preference("toolkit.startup.max_resumed_crashes", -1)
+            # Desabilita telemetria e remote settings (evita erros de rede)
+            options.set_preference("datareporting.healthreport.uploadEnabled", False)
+            options.set_preference("datareporting.policy.dataSubmissionEnabled", False)
+            options.set_preference("services.settings.server", "")
 
             service = webdriver.FirefoxService(
                 executable_path="/usr/local/bin/geckodriver",
-                log_output=sys.stdout,  # log do geckodriver na stdout do container
+                log_output=sys.stdout,
             )
 
             driver = webdriver.Firefox(options=options, service=service)
