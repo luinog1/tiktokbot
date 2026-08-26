@@ -1,8 +1,6 @@
 """
 TikTok Bot — Zefoy CAPTCHA solver via Tesseract OCR (100% free, open source).
 Integrates OCR-based CAPTCHA resolution using Tesseract + OpenCV.
-Based on: https://github.com/xtekky/zefoy-captcha-solver (Google Vision approach)
-Adapted to: Tesseract OCR (fully self-hosted, no API keys).
 """
 
 import re
@@ -19,13 +17,16 @@ import pytesseract
 
 from selenium import webdriver
 from selenium.webdriver.common.by import By
-from selenium.common.exceptions import NoSuchElementException, TimeoutException
+from selenium.common.exceptions import (
+    NoSuchElementException,
+    TimeoutException,
+    UnexpectedAlertPresentException,
+    NoAlertPresentException,
+)
 from selenium.webdriver.support.ui import WebDriverWait
 from selenium.webdriver.support import expected_conditions as EC
 
-# Modo headless/Render: lê configuração de variáveis de ambiente
-# TIKTOK_SERVICE: número do serviço (1-7), ex: "4" para Views
-# TIKTOK_VIDEO_URL: URL do vídeo, ex: "https://www.tiktok.com/@user/video/123"
+# Modo headless/Render
 _HEADLESS_MODE = not sys.stdin.isatty() or os.environ.get("RENDER")
 
 # Tesseract path (Render/Docker)
@@ -44,18 +45,24 @@ class Bot:
 
     def start(self):
         self.driver.get("https://zefoy.com")
+        self._dismiss_any_alert()
         self._solve_captcha()
 
         # Page refresh 1
         sleep(2)
         self.driver.refresh()
+        self._dismiss_any_alert()
 
         # Page refresh 2
         sleep(2)
         self.driver.refresh()
+        self._dismiss_any_alert()
 
         self._check_services_status()
-        self.driver.minimize_window()
+        try:
+            self.driver.minimize_window()
+        except Exception:
+            pass
         self._print_services_list()
         service = self._choose_service()
         video_url = self._choose_video_url()
@@ -77,7 +84,7 @@ class Bot:
 
             options = webdriver.FirefoxOptions()
 
-            # Detecta o binário disponível (firefox-esr em Debian/Ubuntu)
+            # Detecta o binário disponível
             for binary in ["/usr/bin/firefox-esr", "/usr/bin/firefox"]:
                 if os.path.exists(binary):
                     options.binary_location = binary
@@ -86,7 +93,7 @@ class Bot:
             # Headless nativo do Firefox
             options.add_argument("-headless")
 
-            # Desabilita sandbox via about:config — necessário em containers
+            # Sandbox desabilitada (containers sem CAP_SYS_ADMIN)
             options.set_preference("security.sandbox.content.level", 0)
             options.set_preference("security.sandbox.gpu.level", 0)
             options.set_preference("security.sandbox.media.level", 0)
@@ -97,11 +104,25 @@ class Bot:
             options.set_preference("datareporting.policy.dataSubmissionEnabled", False)
             options.set_preference("services.settings.server", "")
 
-            # Anti-detection tweaks
+            # Anti-detection
             options.set_preference("general.useragent.override",
                 "Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:128.0) Gecko/20100101 Firefox/128.0")
             options.set_preference("dom.webdriver.enabled", False)
             options.set_preference("useAutomationExtension", False)
+
+            # BLOQUEAR NOTIFICAÇÕES (evita o alert que crasha o bot)
+            options.set_preference("dom.webnotifications.enabled", False)
+            options.set_preference("dom.push.enabled", False)
+            options.set_preference("permissions.default.desktop-notification", 2)
+            options.set_preference("permissions.default.desktop-notification2", 2)
+            options.set_preference("browser.search.region", "US")
+            options.set_preference("browser.search.geoip.url", "")
+
+            # Desabilitar prompts de permissão
+            options.set_preference("geo.enabled", False)
+            options.set_preference("geo.provider.use_corelocation", False)
+            options.set_preference("geo.prompt.testing", False)
+            options.set_preference("geo.prompt.testing.allow", False)
 
             service = webdriver.FirefoxService(
                 executable_path="/usr/local/bin/geckodriver",
@@ -157,13 +178,30 @@ class Bot:
         }
 
     # ===================================================================
-    # CAPTCHA SOLVER — Tesseract OCR (100% free, no API keys)
+    # ALERT HANDLER
+    # ===================================================================
+    def _dismiss_any_alert(self):
+        """Tenta dismiss qualquer alert/popup aberto."""
+        try:
+            alert = self.driver.switch_to.alert
+            print("[!] Alert detectado: {}".format(alert.text))
+            alert.dismiss()
+            print("[+] Alert dismissed")
+            sleep(0.5)
+        except NoAlertPresentException:
+            pass
+        except Exception as e:
+            print("[!] Erro ao dismiss alert: {}".format(e))
+
+    # ===================================================================
+    # CAPTCHA SOLVER — Tesseract OCR (100% free)
     # ===================================================================
     def _solve_captcha(self):
         print("[~] Scanning for CAPTCHA...")
 
-        # Wait for the captcha input to appear
+        # Wait for the captcha input to appear (com tratamento de alert)
         self._wait_for_element(By.TAG_NAME, "input")
+        self._dismiss_any_alert()
 
         # Try OCR-based solving first
         captcha_text = self._solve_captcha_ocr()
@@ -171,13 +209,13 @@ class Bot:
         if captcha_text:
             print("[+] CAPTCHA solved via OCR: {}".format(captcha_text))
             try:
-                # Find the captcha input and fill it
+                self._dismiss_any_alert()
                 captcha_input = self.driver.find_element(By.TAG_NAME, "input")
                 captcha_input.clear()
                 captcha_input.send_keys(captcha_text)
                 sleep(0.5)
 
-                # Try to submit (some zefoy versions have a submit button)
+                # Try to submit
                 try:
                     submit_btn = self.driver.find_element(
                         By.CSS_SELECTOR, "button[type='submit'], button.btn-primary"
@@ -185,15 +223,15 @@ class Bot:
                     submit_btn.click()
                     sleep(2)
                 except NoSuchElementException:
-                    # No submit button, just wait for auto-validation
                     sleep(2)
+            except UnexpectedAlertPresentException:
+                self._dismiss_any_alert()
             except Exception as e:
                 print("[!] Error filling CAPTCHA: {}".format(e))
         else:
             print("[!] OCR failed, waiting for page to clear...")
 
         # Fallback: wait for the page to indicate captcha is cleared
-        # (zefoy shows "Youtube" link when captcha is done)
         self._wait_for_element(By.LINK_TEXT, "Youtube")
         print("[+] Captcha completed successfully")
         print()
@@ -202,11 +240,9 @@ class Bot:
         """
         Capture the CAPTCHA image from zefoy.com and solve it using
         Tesseract OCR with OpenCV preprocessing.
-        Returns the captcha text or empty string if failed.
         """
         try:
-            # Zefoy captcha is typically an <img> near the input
-            # Try common selectors for the captcha image
+            self._dismiss_any_alert()
             captcha_img = None
             selectors = [
                 "img[src*='captcha']",
@@ -227,11 +263,9 @@ class Bot:
                     continue
 
             if captcha_img is None:
-                # Last resort: take full page screenshot and crop the captcha area
                 print("[~] Captcha image not found by selector, trying full page OCR...")
                 return self._solve_captcha_from_screenshot()
 
-            # Take screenshot of the captcha element
             png = captcha_img.screenshot_as_png
             return self._ocr_image(png)
 
@@ -242,9 +276,9 @@ class Bot:
     def _solve_captcha_from_screenshot(self) -> str:
         """Fallback: take full page screenshot and OCR the top portion."""
         try:
+            self._dismiss_any_alert()
             png = self.driver.get_screenshot_as_png()
             image = Image.open(io.BytesIO(png))
-            # Crop top 40% where captcha usually appears
             w, h = image.size
             cropped = image.crop((0, 0, w, int(h * 0.4)))
             buf = io.BytesIO()
@@ -257,55 +291,37 @@ class Bot:
     def _ocr_image(self, png_bytes: bytes) -> str:
         """
         Run Tesseract OCR on PNG bytes with OpenCV preprocessing.
-        Optimized for zefoy-style text CAPTCHAs.
         """
         try:
-            # Load image from bytes
             nparr = np.frombuffer(png_bytes, np.uint8)
             img = cv2.imdecode(nparr, cv2.IMREAD_COLOR)
 
             if img is None:
                 return ""
 
-            # Preprocessing pipeline optimized for noisy text CAPTCHAs
-            # 1. Grayscale
+            # Preprocessing pipeline
             gray = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)
-
-            # 2. Resize 2x (helps Tesseract)
             h, w = gray.shape[:2]
             gray = cv2.resize(gray, (w * 2, h * 2), interpolation=cv2.INTER_CUBIC)
-
-            # 3. Gaussian blur to reduce noise
             blurred = cv2.GaussianBlur(gray, (5, 5), sigmaX=1, sigmaY=1)
-
-            # 4. Morphological close to connect broken letters
             kernel = cv2.getStructuringElement(cv2.MORPH_RECT, (2, 2))
             morph = cv2.morphologyEx(blurred, cv2.MORPH_CLOSE, kernel)
-
-            # 5. Otsu threshold
             _, thresh = cv2.threshold(morph, 0, 255, cv2.THRESH_BINARY + cv2.THRESH_OTSU)
 
-            # 6. Invert if needed (Tesseract prefers dark text on light bg)
             white_pixels = cv2.countNonZero(thresh)
             total_pixels = thresh.shape[0] * thresh.shape[1]
             if white_pixels > total_pixels * 0.7:
                 thresh = cv2.bitwise_not(thresh)
 
-            # Run Tesseract OCR
-            # --psm 7 = treat as single text line
-            # --oem 3 = default engine mode
-            # -c tessedit_char_whitelist = only alphanumeric
             custom_config = (
                 r'--oem 3 --psm 7 '
                 r'-c tessedit_char_whitelist=ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789'
             )
             text = pytesseract.image_to_string(thresh, config=custom_config)
 
-            # Clean up result
             cleaned = re.sub(r'[^A-Za-z0-9]', '', text).strip()
             print("[~] OCR raw: '{}' | cleaned: '{}'".format(text.strip(), cleaned))
 
-            # Zefoy captchas are usually 4-8 characters
             if 3 <= len(cleaned) <= 10:
                 return cleaned
             return ""
@@ -315,13 +331,14 @@ class Bot:
             return ""
 
     # ===================================================================
-    # ORIGINAL BOT LOGIC (unchanged)
+    # ORIGINAL BOT LOGIC
     # ===================================================================
     def _check_services_status(self):
         for service in self.services:
             selector = self.services[service]["selector"]
 
             try:
+                self._dismiss_any_alert()
                 element = self.driver.find_element(By.CLASS_NAME, selector)
 
                 if element.is_enabled():
@@ -329,6 +346,9 @@ class Bot:
                 else:
                     self.services[service]["status"] = "[OFFLINE]"
             except NoSuchElementException:
+                self.services[service]["status"] = "[OFFLINE]"
+            except UnexpectedAlertPresentException:
+                self._dismiss_any_alert()
                 self.services[service]["status"] = "[OFFLINE]"
 
     def _print_services_list(self):
@@ -414,7 +434,7 @@ class Bot:
 
             sleep(3)
 
-            # Click the submit button if it's present, otherwise pass
+            # Click the submit button if it's present
             try:
                 container.find_element(By.CSS_SELECTOR, "button.btn.btn-dark").click()
                 print(
@@ -422,6 +442,8 @@ class Bot:
                 )
             except NoSuchElementException:
                 pass
+            except UnexpectedAlertPresentException:
+                self._dismiss_any_alert()
 
             sleep(3)
 
@@ -444,7 +466,7 @@ class Bot:
                 [minutes, seconds] = re.findall(r"\d+", text)
                 remaining_time = (
                     int(minutes) * 60 + int(seconds) + 5
-                )  # plus 5 for safety
+                )
 
                 return remaining_time
             else:
@@ -457,8 +479,12 @@ class Bot:
     def _wait_for_element(self, by, value):
         while True:
             try:
+                self._dismiss_any_alert()
                 element = self.driver.find_element(by, value)
                 return element
+            except UnexpectedAlertPresentException:
+                self._dismiss_any_alert()
+                sleep(1)
             except NoSuchElementException:
                 sleep(1)
 
