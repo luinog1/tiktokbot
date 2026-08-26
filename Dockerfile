@@ -27,10 +27,6 @@ COPY . .
 COPY docker-entrypoint.sh /docker-entrypoint.sh
 RUN chmod +x /docker-entrypoint.sh
 
-EXPOSE 10000
-
 ENTRYPOINT ["/docker-entrypoint.sh"]
 
-# Executa com xvfb-run agora que o xauth está presente
-# ⚠️ Altere "main.py" para o nome real do seu script
-CMD ["xvfb-run", "--auto-servernum", "--server-args=-screen 0 1280x1024x24", "python", "main.py"]
+CMD ["xvfb-run", "--auto-servernum", "--server-args=-screen 0 1280x1024x24", "python", "bot.py"]
