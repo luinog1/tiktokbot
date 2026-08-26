@@ -1,17 +1,35 @@
+"""
+TikTok Bot — Zefoy CAPTCHA solver via Tesseract OCR (100% free, open source).
+Integrates OCR-based CAPTCHA resolution using Tesseract + OpenCV.
+Based on: https://github.com/xtekky/zefoy-captcha-solver (Google Vision approach)
+Adapted to: Tesseract OCR (fully self-hosted, no API keys).
+"""
+
 import re
 import os
 import sys
 import subprocess
+import base64
+import io
 from time import sleep
+from PIL import Image
+import cv2
+import numpy as np
+import pytesseract
 
 from selenium import webdriver
 from selenium.webdriver.common.by import By
-from selenium.common.exceptions import NoSuchElementException
+from selenium.common.exceptions import NoSuchElementException, TimeoutException
+from selenium.webdriver.support.ui import WebDriverWait
+from selenium.webdriver.support import expected_conditions as EC
 
 # Modo headless/Render: lê configuração de variáveis de ambiente
 # TIKTOK_SERVICE: número do serviço (1-7), ex: "4" para Views
 # TIKTOK_VIDEO_URL: URL do vídeo, ex: "https://www.tiktok.com/@user/video/123"
 _HEADLESS_MODE = not sys.stdin.isatty() or os.environ.get("RENDER")
+
+# Tesseract path (Render/Docker)
+pytesseract.pytesseract.tesseract_cmd = os.environ.get("TESSERACT_CMD", "/usr/bin/tesseract")
 
 
 class Bot:
@@ -48,10 +66,10 @@ class Bot:
         print("|                                                        |")
         print("|   Made by : Simon Farah                                |")
         print("|   Github  : https://github.com/simonfarah/tiktok-bot   |")
+        print("|   CAPTCHA : Tesseract OCR (100% free)                  |")
         print("|                                                        |")
         print("+--------------------------------------------------------+")
-
-        print("\n")
+        print()
 
     def _init_driver(self):
         try:
@@ -69,18 +87,21 @@ class Bot:
             options.add_argument("-headless")
 
             # Desabilita sandbox via about:config — necessário em containers
-            # sem CAP_SYS_ADMIN (Render, Heroku, etc.)
             options.set_preference("security.sandbox.content.level", 0)
             options.set_preference("security.sandbox.gpu.level", 0)
             options.set_preference("security.sandbox.media.level", 0)
             options.set_preference("security.sandbox.content.tempdir.level", 0)
-            # Desabilita crash reporter que mata o processo quando filho crasha
             options.set_preference("browser.tabs.crashReporting.sendReport", False)
             options.set_preference("toolkit.startup.max_resumed_crashes", -1)
-            # Desabilita telemetria e remote settings (evita erros de rede)
             options.set_preference("datareporting.healthreport.uploadEnabled", False)
             options.set_preference("datareporting.policy.dataSubmissionEnabled", False)
             options.set_preference("services.settings.server", "")
+
+            # Anti-detection tweaks
+            options.set_preference("general.useragent.override",
+                "Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:128.0) Gecko/20100101 Firefox/128.0")
+            options.set_preference("dom.webdriver.enabled", False)
+            options.set_preference("useAutomationExtension", False)
 
             service = webdriver.FirefoxService(
                 executable_path="/usr/local/bin/geckodriver",
@@ -88,13 +109,12 @@ class Bot:
             )
 
             driver = webdriver.Firefox(options=options, service=service)
-
             print("[+] Driver loaded successfully")
         except Exception as e:
             print("[x] Error loading driver: {}".format(e))
             exit(1)
 
-        print("\n")
+        print()
         return driver
 
     def _init_services(self):
@@ -136,15 +156,167 @@ class Bot:
             },
         }
 
+    # ===================================================================
+    # CAPTCHA SOLVER — Tesseract OCR (100% free, no API keys)
+    # ===================================================================
     def _solve_captcha(self):
-        self._wait_for_element(By.TAG_NAME, "input")
-        print("[~] Please complete the captcha")
+        print("[~] Scanning for CAPTCHA...")
 
+        # Wait for the captcha input to appear
+        self._wait_for_element(By.TAG_NAME, "input")
+
+        # Try OCR-based solving first
+        captcha_text = self._solve_captcha_ocr()
+
+        if captcha_text:
+            print("[+] CAPTCHA solved via OCR: {}".format(captcha_text))
+            try:
+                # Find the captcha input and fill it
+                captcha_input = self.driver.find_element(By.TAG_NAME, "input")
+                captcha_input.clear()
+                captcha_input.send_keys(captcha_text)
+                sleep(0.5)
+
+                # Try to submit (some zefoy versions have a submit button)
+                try:
+                    submit_btn = self.driver.find_element(
+                        By.CSS_SELECTOR, "button[type='submit'], button.btn-primary"
+                    )
+                    submit_btn.click()
+                    sleep(2)
+                except NoSuchElementException:
+                    # No submit button, just wait for auto-validation
+                    sleep(2)
+            except Exception as e:
+                print("[!] Error filling CAPTCHA: {}".format(e))
+        else:
+            print("[!] OCR failed, waiting for page to clear...")
+
+        # Fallback: wait for the page to indicate captcha is cleared
+        # (zefoy shows "Youtube" link when captcha is done)
         self._wait_for_element(By.LINK_TEXT, "Youtube")
         print("[+] Captcha completed successfully")
+        print()
 
-        print("\n")
+    def _solve_captcha_ocr(self) -> str:
+        """
+        Capture the CAPTCHA image from zefoy.com and solve it using
+        Tesseract OCR with OpenCV preprocessing.
+        Returns the captcha text or empty string if failed.
+        """
+        try:
+            # Zefoy captcha is typically an <img> near the input
+            # Try common selectors for the captcha image
+            captcha_img = None
+            selectors = [
+                "img[src*='captcha']",
+                "img.captcha",
+                "#captcha",
+                "img[alt*='captcha' i]",
+                "form img",
+                "div img",
+            ]
 
+            for sel in selectors:
+                try:
+                    elem = self.driver.find_element(By.CSS_SELECTOR, sel)
+                    if elem.is_displayed():
+                        captcha_img = elem
+                        break
+                except NoSuchElementException:
+                    continue
+
+            if captcha_img is None:
+                # Last resort: take full page screenshot and crop the captcha area
+                print("[~] Captcha image not found by selector, trying full page OCR...")
+                return self._solve_captcha_from_screenshot()
+
+            # Take screenshot of the captcha element
+            png = captcha_img.screenshot_as_png
+            return self._ocr_image(png)
+
+        except Exception as e:
+            print("[!] CAPTCHA OCR error: {}".format(e))
+            return ""
+
+    def _solve_captcha_from_screenshot(self) -> str:
+        """Fallback: take full page screenshot and OCR the top portion."""
+        try:
+            png = self.driver.get_screenshot_as_png()
+            image = Image.open(io.BytesIO(png))
+            # Crop top 40% where captcha usually appears
+            w, h = image.size
+            cropped = image.crop((0, 0, w, int(h * 0.4)))
+            buf = io.BytesIO()
+            cropped.save(buf, format="PNG")
+            return self._ocr_image(buf.getvalue())
+        except Exception as e:
+            print("[!] Screenshot OCR error: {}".format(e))
+            return ""
+
+    def _ocr_image(self, png_bytes: bytes) -> str:
+        """
+        Run Tesseract OCR on PNG bytes with OpenCV preprocessing.
+        Optimized for zefoy-style text CAPTCHAs.
+        """
+        try:
+            # Load image from bytes
+            nparr = np.frombuffer(png_bytes, np.uint8)
+            img = cv2.imdecode(nparr, cv2.IMREAD_COLOR)
+
+            if img is None:
+                return ""
+
+            # Preprocessing pipeline optimized for noisy text CAPTCHAs
+            # 1. Grayscale
+            gray = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)
+
+            # 2. Resize 2x (helps Tesseract)
+            h, w = gray.shape[:2]
+            gray = cv2.resize(gray, (w * 2, h * 2), interpolation=cv2.INTER_CUBIC)
+
+            # 3. Gaussian blur to reduce noise
+            blurred = cv2.GaussianBlur(gray, (5, 5), sigmaX=1, sigmaY=1)
+
+            # 4. Morphological close to connect broken letters
+            kernel = cv2.getStructuringElement(cv2.MORPH_RECT, (2, 2))
+            morph = cv2.morphologyEx(blurred, cv2.MORPH_CLOSE, kernel)
+
+            # 5. Otsu threshold
+            _, thresh = cv2.threshold(morph, 0, 255, cv2.THRESH_BINARY + cv2.THRESH_OTSU)
+
+            # 6. Invert if needed (Tesseract prefers dark text on light bg)
+            white_pixels = cv2.countNonZero(thresh)
+            total_pixels = thresh.shape[0] * thresh.shape[1]
+            if white_pixels > total_pixels * 0.7:
+                thresh = cv2.bitwise_not(thresh)
+
+            # Run Tesseract OCR
+            # --psm 7 = treat as single text line
+            # --oem 3 = default engine mode
+            # -c tessedit_char_whitelist = only alphanumeric
+            custom_config = (
+                r'--oem 3 --psm 7 '
+                r'-c tessedit_char_whitelist=ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789'
+            )
+            text = pytesseract.image_to_string(thresh, config=custom_config)
+
+            # Clean up result
+            cleaned = re.sub(r'[^A-Za-z0-9]', '', text).strip()
+            print("[~] OCR raw: '{}' | cleaned: '{}'".format(text.strip(), cleaned))
+
+            # Zefoy captchas are usually 4-8 characters
+            if 3 <= len(cleaned) <= 10:
+                return cleaned
+            return ""
+
+        except Exception as e:
+            print("[!] OCR processing error: {}".format(e))
+            return ""
+
+    # ===================================================================
+    # ORIGINAL BOT LOGIC (unchanged)
+    # ===================================================================
     def _check_services_status(self):
         for service in self.services:
             selector = self.services[service]["selector"]
@@ -166,7 +338,7 @@ class Bot:
 
             print("[{}] {}".format(str(index + 1), title).ljust(30), status)
 
-        print("\n")
+        print()
 
     def _choose_service(self):
         if _HEADLESS_MODE:
@@ -178,7 +350,7 @@ class Bot:
                 choice = 4
             key = list(self.services.keys())[choice - 1]
             print("[+] Serviço selecionado via env: {}".format(self.services[key]["title"]))
-            print("\n")
+            print()
             return key
 
         while True:
@@ -186,7 +358,7 @@ class Bot:
                 choice = int(input("[~] Choose an option : "))
             except ValueError:
                 print("[!] Invalid input format. Please try again...")
-                print("\n")
+                print()
                 continue
 
             if choice in range(1, 8):
@@ -194,15 +366,15 @@ class Bot:
 
                 if self.services[key]["status"] == "[OFFLINE]":
                     print("[!] Service is offline. Please choose another...")
-                    print("\n")
+                    print()
                     continue
 
                 print("[+] You have chosen {}".format(self.services[key]["title"]))
-                print("\n")
+                print()
                 break
             else:
                 print("[!] No service found with this number")
-                print("\n")
+                print()
 
         return key
 
@@ -213,12 +385,11 @@ class Bot:
                 print("[!] ERRO: defina a env var TIKTOK_VIDEO_URL com a URL do vídeo")
                 sys.exit(1)
             print("[+] URL do vídeo via env: {}".format(video_url))
-            print("\n")
+            print()
             return video_url
 
         video_url = input("[~] Video URL : ")
-        print("\n")
-
+        print()
         return video_url
 
     def _start_service(self, service, video_url):
@@ -262,7 +433,7 @@ class Bot:
                 print("[~] Sleeping for {} minutes {} seconds".format(minutes, seconds))
                 sleep(remaining_time)
 
-            print("\n")
+            print()
 
     def _compute_remaining_time(self, container):
         try:
