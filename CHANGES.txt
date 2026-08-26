@@ -1,0 +1,2 @@
+Deployment files generated for the existing upstream repository.
+No upstream bot.py logic was copied or rewritten here; place these files at the repository root.

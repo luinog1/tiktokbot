@@ -1,0 +1,13 @@
+services:
+  - type: worker
+    name: tiktok-bot
+    runtime: docker
+    dockerfilePath: ./Dockerfile
+    dockerContext: .
+    plan: starter
+    autoDeploy: true
+    envVars:
+      - key: PYTHONUNBUFFERED
+        value: "1"
+      - key: MOZ_HEADLESS
+        value: "1"
