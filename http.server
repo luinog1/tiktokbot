@@ -1,0 +1,17 @@
+from threading import Thread
+from http.server import HTTPServer, BaseHTTPRequestHandler
+
+class HealthHandler(BaseHTTPRequestHandler):
+    def do_GET(self):
+        self.send_response(200)
+        self.end_headers()
+        self.wfile.write(b"OK")
+
+def start_health_server():
+    server = HTTPServer(('0.0.0.0', 10000), HealthHandler)
+    server.serve_forever()
+
+# No início do seu script, após importar, inicie o servidor em uma thread
+Thread(target=start_health_server, daemon=True).start()
+
+# Depois, execute seu bot normalmente (com loop ou tarefa única)
