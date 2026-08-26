@@ -1,9 +1,10 @@
 FROM python:3.11-slim
 
-# Instala o Firefox, Xvfb, ferramentas e xvfb-run
+# Instala Firefox, Xvfb, xauth e ferramentas úteis
 RUN apt-get update && apt-get install -y --no-install-recommends \
     firefox-esr \
     xvfb \
+    xauth \
     wget \
     ca-certificates \
     curl \
@@ -28,9 +29,8 @@ RUN chmod +x /docker-entrypoint.sh
 
 EXPOSE 10000
 
-# Entrypoint verifica geckodriver e Firefox
 ENTRYPOINT ["/docker-entrypoint.sh"]
 
-# Executa o bot com xvfb-run (cria display virtual automaticamente)
+# Executa com xvfb-run agora que o xauth está presente
 # ⚠️ Altere "main.py" para o nome real do seu script
 CMD ["xvfb-run", "--auto-servernum", "--server-args=-screen 0 1280x1024x24", "python", "main.py"]
