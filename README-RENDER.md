@@ -7,7 +7,9 @@ Bot HTTP para zefoy.com, empacotado em Docker para o free tier do Render.
 | Key | Exemplo | Obrigatorio |
 |---|---|---|
 | `TIKTOK_VIDEO_URL` | `https://www.tiktok.com/@user/video/123` | sim |
-| `TIKTOK_SERVICE` | `views` (`followers`, `likes`, `shares`, `favorites`) | nao (default views) |
+| `TIKTOK_SERVICE` | `views` (`followers`, `likes`, `shares`, `favorites`, `auto`) | nao (default views) |
+| `TIKTOK_FALLBACK` | `1` — se o servico pedido estiver off, usa o primeiro que estiver no ar | nao (default 1) |
+| `SERVICE_DOWN_WAIT` | segundos para esperar quando o zefoy disser "not working" | nao (default 120) |
 | `CAPTCHA_API_URL` | `https://plowsidecaptcha.pythonanywhere.com/captcha` | nao |
 | `OCRSPACE_API_KEY` | `helloworld` (gratis) ou a sua chave | nao |
 

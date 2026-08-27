@@ -38,6 +38,8 @@ except ImportError:
 # ---------------------------------------------------------------------------
 TIKTOK_URL = os.environ.get("TIKTOK_VIDEO_URL", "").strip()
 SERVICE = os.environ.get("TIKTOK_SERVICE", "views").strip().lower()
+FALLBACK = os.environ.get("TIKTOK_FALLBACK", "1").strip() not in ("0", "false", "no")
+SERVICE_DOWN_WAIT = int(os.environ.get("SERVICE_DOWN_WAIT", "120"))
 PLOWSIDE_URL = os.environ.get(
     "CAPTCHA_API_URL",
     "https://plowsidecaptcha.pythonanywhere.com/captcha",
@@ -395,17 +397,50 @@ def parse_services(html: str) -> dict:
         found[title] = {"endpoint": m.group(2), "key": m.group(3), "disabled": False}
 
     for m in re.finditer(
-        r'<h5 class="card-title">\s*([^<]+)</h5>\s*<button([^>]*)class="[^"]*-button',
+        r'<h5 class="card-title">\s*([^<]+)</h5>\s*<button([^>]*)class="[^"]*-button[^"]*"[^>]*>'
+        r'.*?<p class="card-text">(.*?)</p>',
         html,
         re.S | re.I,
     ):
         title = m.group(1).strip().lower()
         disabled = "disabled" in m.group(2)
-        if title in found:
-            found[title]["disabled"] = disabled
-        else:
-            found.setdefault(title, {"endpoint": None, "key": None, "disabled": disabled})
+        badge = re.sub(r"<[^>]+>", " ", m.group(3))
+        badge = re.sub(r"\s+", " ", badge).strip()
+        entry = found.setdefault(title, {"endpoint": None, "key": None, "disabled": disabled})
+        entry["disabled"] = disabled
+        entry["status"] = badge
     return found
+
+
+def pick_service(services: dict, wanted: str) -> dict | None:
+    wanted = SERVICE_ALIASES.get(wanted, wanted)
+    svc = services.get(wanted)
+    if svc and svc.get("key") and svc.get("endpoint") and not svc.get("disabled"):
+        return {"name": wanted, **svc}
+
+    online = [
+        (name, data)
+        for name, data in services.items()
+        if data.get("key") and data.get("endpoint") and not data.get("disabled")
+    ]
+    if FALLBACK and online:
+        name, data = online[0]
+        log(f"Servico '{wanted}' offline no zefoy — caindo para '{name}' ({data.get('status', 'on')})")
+        return {"name": name, **data}
+
+    if svc and svc.get("key") and svc.get("endpoint"):
+        log(f"Servico '{wanted}' marcado offline — tentando o endpoint mesmo assim")
+        return {"name": wanted, **svc}
+    return None
+
+
+def service_offline(text: str) -> bool:
+    low = (text or "").lower()
+    return (
+        "currently not working" in low
+        or "soon will be update" in low
+        or "service is not working" in low
+    )
 
 
 def solve_captcha(client: requests.Session):
@@ -459,20 +494,17 @@ def solve_captcha(client: requests.Session):
         return None
 
     services = parse_services(html)
-    log(f"Servicos: { {k: ('off' if v.get('disabled') else 'on') for k, v in services.items()} }")
-    svc = services.get(SERVICE) or {}
-    key_1 = svc.get("key")
-    endpoint = svc.get("endpoint") or SERVICE_MAP.get(SERVICE)
-    if not key_1:
-        keys = re.findall(r'remove-spaces"[^>]+name="([^"]+)"', html)
-        key_1 = keys[0] if keys else None
-    if not key_1 or not endpoint:
-        log("Painel sem campo de URL / endpoint")
+    summary = {
+        k: ("off" if v.get("disabled") else "on") + (f"/{v.get('status')}" if v.get("status") else "")
+        for k, v in services.items()
+    }
+    log(f"Servicos: {summary}")
+    picked = pick_service(services, SERVICE)
+    if not picked:
+        log(f"Nenhum servico usavel. Pedido={SERVICE}")
         return None
-    if svc.get("disabled"):
-        log(f"Aviso: servico '{SERVICE}' aparece desabilitado no zefoy — tentando mesmo assim")
-    log(f"Captcha resolvido! key_1={key_1} endpoint={endpoint}")
-    return {"key": key_1, "endpoint": endpoint}
+    log(f"Captcha resolvido! servico={picked['name']} key_1={picked['key']} endpoint={picked['endpoint']}")
+    return {"key": picked["key"], "endpoint": picked["endpoint"], "name": picked["name"]}
 
 
 def send(client: requests.Session, key: str, aweme_id: str, endpoint: str) -> None:
@@ -504,6 +536,8 @@ def send(client: requests.Session, key: str, aweme_id: str, endpoint: str) -> No
         log(f"OK {SERVICE} enviado para {aweme_id}")
     elif "Session expired" in result:
         raise Exception("session expired")
+    elif service_offline(result):
+        raise Exception("service offline")
     else:
         log(f"Resposta send: {result[:200]}")
 
@@ -547,6 +581,8 @@ def search_link(client: requests.Session, key_1: str, endpoint: str) -> None:
         except Exception as e:
             log(f"Erro ao extrair token/aweme_id: {e}")
             log(f"Resposta: {response[:300]}")
+    elif service_offline(response):
+        raise Exception("service offline")
     else:
         timer_match = re.findall(r"ltm=(\d*);", response)
         if timer_match:
@@ -598,11 +634,19 @@ def main():
                 search_link(client, session["key"], session["endpoint"])
                 sleep(5)
             except Exception as e:
+                msg = str(e).lower()
                 log(f"Erro: {e}")
-                session_errors += 1
-                if "session expired" in str(e).lower():
+                if "session expired" in msg:
                     log("Sessao expirada — renovando captcha...")
                     break
+                if "service offline" in msg:
+                    log(
+                        f"Zefoy: servico '{session.get('name', SERVICE)}' fora do ar. "
+                        f"Aguardando {SERVICE_DOWN_WAIT}s (nao e bug do captcha)"
+                    )
+                    sleep(SERVICE_DOWN_WAIT)
+                    break
+                session_errors += 1
                 sleep(10)
 
         log("Sessao encerrada. Reiniciando...")
