@@ -1,15 +1,10 @@
 services:
-  - type: worker
-    name: tiktok-bot
+  - type: web
+    name: tiktokbot
     runtime: docker
-    dockerfilePath: ./Dockerfile
-    dockerContext: .
-    plan: starter
-    autoDeploy: true
+    plan: free
     envVars:
-      - key: PYTHONUNBUFFERED
-        value: "1"
-      - key: MOZ_HEADLESS
-        value: "1"
-      - key: TESSERACT_CMD
-        value: "/usr/bin/tesseract"
+      - key: TIKTOK_VIDEO_URL
+        value: ""          # preencher no dashboard
+      - key: TIKTOK_SERVICE
+        value: "views"     # views | followers | likes | shares | favorites
