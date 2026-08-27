@@ -1,2 +1,10 @@
-Deployment files generated for the existing upstream repository.
-No upstream bot.py logic was copied or rewritten here; place these files at the repository root.
+2026-08-27 — captcha zefoy 2026
+
+O HTML do zefoy mudou:
+- imagem do captcha NAO vem mais no <img src> (src vazio, carregada via GET /?getcapthca=TS)
+- campo de resposta e type="search" name="captchalogin" (nao type="text")
+- oninput forca lowercase + so letras: this.value.toLowerCase().replace(/[^a-z]/g,'')
+- captcha_encoded e fingerprint AES (CryptoJS) preenchido em JS
+- submit e XHR POST {captchalogin, captcha_encoded} e o body de sucesso e "success"
+
+Solver: plowside (se vivo) -> ocr.space (gratis) -> tesseract local.

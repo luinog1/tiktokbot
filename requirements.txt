@@ -2,3 +2,4 @@ requests==2.31.0
 pillow==10.3.0
 colorama==0.4.6
 pytesseract==0.3.13
+pycryptodome==3.20.0

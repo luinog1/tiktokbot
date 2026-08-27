@@ -1,6 +1,6 @@
 FROM python:3.11-slim
 
-# Tesseract para OCR do captcha (imagem matemática simples)
+# Tesseract fica como fallback se as APIs publicas de OCR cairem
 RUN apt-get update && apt-get install -y --no-install-recommends \
     tesseract-ocr \
     tesseract-ocr-eng \
