@@ -443,6 +443,44 @@ def service_offline(text: str) -> bool:
     )
 
 
+def parse_wait_seconds(html: str):
+    m = re.search(r"remainingTimelogin\s*=\s*(\d+)", html or "")
+    if m:
+        return int(m.group(1))
+    m = re.search(r"ltm=(\d*);", html or "")
+    if m:
+        return int(m.group(1))
+    m = re.search(r"Please wait (\d+) seconds", html or "", re.I)
+    if m:
+        return int(m.group(1))
+    return None
+
+
+def parse_send_token(html: str):
+    patterns = [
+        r'<input[^>]*type=["\']hidden["\'][^>]*name=["\']([^"\']+)["\'][^>]*value=["\']([^"\']+)["\']',
+        r'<input[^>]*name=["\']([^"\']+)["\'][^>]*value=["\']([^"\']+)["\'][^>]*(?:type=["\']hidden["\']|\bhidden\b)',
+        r'name="([^"]+)"\s+value="([^"]+)"\s+hidden',
+    ]
+    for pat in patterns:
+        m = re.search(pat, html or "", re.I)
+        if m:
+            return m.group(1), m.group(2)
+    return None
+
+
+def wait_seconds(seconds: int, reason: str = "Cooldown") -> None:
+    if seconds <= 0:
+        return
+    log(f"{reason}: {seconds}s")
+    end = time() + seconds
+    while time() < end:
+        remaining = round(end - time())
+        print(f"\r{Fore.YELLOW}[~] aguardando {remaining}s...{Fore.RESET}   ", end="", flush=True)
+        sleep(1)
+    print()
+
+
 def solve_captcha(client: requests.Session):
     log("Carregando zefoy.com...")
     try:
@@ -532,14 +570,19 @@ def send(client: requests.Session, key: str, aweme_id: str, endpoint: str) -> No
         timeout=30,
     )
     result = decode(resp.text)
-    if "sent" in result.lower() or "success" in result.lower():
-        log(f"OK {SERVICE} enviado para {aweme_id}")
+    low = result.lower()
+    if "sent" in low or "success" in low:
+        log(f"OK enviado para {aweme_id}")
     elif "Session expired" in result:
         raise Exception("session expired")
     elif service_offline(result):
         raise Exception("service offline")
-    else:
-        log(f"Resposta send: {result[:200]}")
+    wait = parse_wait_seconds(result)
+    if wait:
+        wait_seconds(wait + 2, "Cooldown apos envio")
+        return
+    if "sent" not in low and "success" not in low:
+        log(f"Resposta send: {result[:250]}")
 
 
 def search_link(client: requests.Session, key_1: str, endpoint: str) -> None:
@@ -572,34 +615,29 @@ def search_link(client: requests.Session, key_1: str, endpoint: str) -> None:
         log(f"Erro na requisicao: {e}")
         return
 
-    if 'onsubmit="showHideElements' in response:
-        try:
-            token2, aweme_id = re.findall(r'name="(.*)" value="(.*)" hidden', response)[0]
-            log(f"Enviando aweme_id={aweme_id} key_2={token2}")
-            sleep(3)
-            send(client, token2, aweme_id, endpoint)
-        except Exception as e:
-            log(f"Erro ao extrair token/aweme_id: {e}")
-            log(f"Resposta: {response[:300]}")
-    elif service_offline(response):
+    token_pair = parse_send_token(response)
+    if token_pair and (
+        "fcde" in response
+        or "showHideElements" in response
+        or 'type="hidden"' in response
+        or "type='hidden'" in response
+    ):
+        token2, aweme_id = token_pair
+        log(f"Enviando aweme_id={aweme_id} key_2={token2}")
+        sleep(2)
+        send(client, token2, aweme_id, endpoint)
+        return
+
+    wait = parse_wait_seconds(response)
+    if wait is not None:
+        wait_seconds(wait + 2, "Cooldown zefoy")
+        return
+
+    if service_offline(response):
         raise Exception("service offline")
-    else:
-        timer_match = re.findall(r"ltm=(\d*);", response)
-        if timer_match:
-            wait = int(timer_match[0])
-            if wait == 0:
-                return
-            log(f"Cooldown: {wait}s")
-            start = time()
-            while time() < start + wait:
-                remaining = round((start + wait) - time())
-                print(f"\r{Fore.YELLOW}[~] aguardando {remaining}s...{Fore.RESET}   ", end="", flush=True)
-                sleep(1)
-            print()
-        elif "Session expired" in response:
-            raise Exception("session expired")
-        else:
-            log(f"Resposta inesperada: {response[:300]}")
+    if "Session expired" in response:
+        raise Exception("session expired")
+    log(f"Resposta inesperada: {response[:300]}")
 
 
 def main():
