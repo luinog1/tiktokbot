@@ -1,6 +1,6 @@
 """
-TikTok Bot - Ultra-lightweight edition for 512MB containers.
-Chromium (lighter than Firefox) + PIL + Tesseract OCR.
+TikTok Bot - Hybrid approach based on xtekky/TikTok-ViewBot v2.py
+CAPTCHA solved via requests (lightweight) + Selenium only for page interaction.
 """
 
 import re
@@ -11,20 +11,19 @@ import io
 import gc
 import time
 from datetime import datetime
+from base64 import b64encode
+from io import BytesIO
+from requests import get, post, Session
 from PIL import Image, ImageFilter, ImageOps, ImageEnhance
 
 import pytesseract
 
 from selenium import webdriver
 from selenium.webdriver.common.by import By
-from selenium.webdriver.chrome.options import Options as ChromeOptions
-from selenium.webdriver.chrome.service import Service as ChromeService
 from selenium.common.exceptions import (
     NoSuchElementException,
     TimeoutException,
     UnexpectedAlertPresentException,
-    NoAlertPresentException,
-    ElementNotInteractableException,
     StaleElementReferenceException,
 )
 
@@ -44,75 +43,56 @@ class Bot:
         if not _HEADLESS_MODE:
             subprocess.run("clear", shell=True)
         self._print_banner()
-        self.driver = self._init_driver()
+        self.driver = None
         self.services = self._init_services()
 
     def _print_banner(self):
         print("+--------------------------------------------------------+")
-        print("|   TikTok Bot - Ultra-Lightweight (Chromium)            |")
-        print("|   512MB RAM optimized | PIL + Tesseract OCR            |")
+        print("|   TikTok Bot - Hybrid (xtekky approach)                  |")
+        print("|   CAPTCHA: requests + Tesseract | Bot: Firefox            |")
         print("+--------------------------------------------------------+")
         print()
 
     def _init_driver(self):
-        log("[~] Loading Chromium driver (memory-optimized)...")
-        options = ChromeOptions()
+        log("[~] Loading Firefox driver...")
+        options = webdriver.FirefoxOptions()
 
-        # Find chromium binary
-        for binary in ["/usr/bin/chromium", "/usr/bin/chromium-browser", "/usr/bin/google-chrome-stable"]:
+        for binary in ["/usr/bin/firefox-esr", "/usr/bin/firefox"]:
             if os.path.exists(binary):
                 options.binary_location = binary
                 break
 
-        # Essential headless + memory flags
-        options.add_argument("--headless=new")
-        options.add_argument("--no-sandbox")
-        options.add_argument("--disable-dev-shm-usage")  # CRITICAL for containers
-        options.add_argument("--disable-gpu")
-        options.add_argument("--disable-software-rasterizer")
-        options.add_argument("--disable-extensions")
-        options.add_argument("--disable-background-networking")
-        options.add_argument("--disable-background-timer-throttling")
-        options.add_argument("--disable-backgrounding-occluded-windows")
-        options.add_argument("--disable-breakpad")
-        options.add_argument("--disable-component-update")
-        options.add_argument("--disable-default-apps")
-        options.add_argument("--disable-features=TranslateUI")
-        options.add_argument("--disable-hang-monitor")
-        options.add_argument("--disable-ipc-flooding-protection")
-        options.add_argument("--disable-popup-blocking")
-        options.add_argument("--disable-prompt-on-repost")
-        options.add_argument("--disable-renderer-backgrounding")
-        options.add_argument("--force-color-profile=srgb")
-        options.add_argument("--metrics-recording-only")
-        options.add_argument("--no-first-run")
-        options.add_argument("--safebrowsing-disable-auto-update")
-        options.add_argument("--password-store=basic")
-        options.add_argument("--use-mock-keychain")
-        options.add_argument("--disable-sync")
-        options.add_argument("--disable-web-security")
-        options.add_argument("--disable-features=IsolateOrigins,site-per-process")
-        options.add_argument("--disable-site-isolation-trials")
-        options.add_argument("--memory-model=low")
-        options.add_argument("--max_old_space_size=128")
-        options.add_argument("--js-flags=--max-old-space-size=128")
-        options.add_argument("--single-process")  # Experimental: saves RAM, may be unstable
+        options.add_argument("-headless")
+        options.set_preference("security.sandbox.content.level", 0)
+        options.set_preference("security.sandbox.gpu.level", 0)
+        options.set_preference("security.sandbox.media.level", 0)
+        options.set_preference("browser.tabs.crashReporting.sendReport", False)
+        options.set_preference("toolkit.startup.max_resumed_crashes", -1)
+        options.set_preference("datareporting.healthreport.uploadEnabled", False)
+        options.set_preference("datareporting.policy.dataSubmissionEnabled", False)
+        options.set_preference("services.settings.server", "")
+        options.set_preference("browser.cache.disk.enable", False)
+        options.set_preference("browser.cache.memory.enable", False)
+        options.set_preference("browser.sessionstore.resume_from_crash", False)
+        options.set_preference("dom.ipc.processCount", 1)
+        options.set_preference("javascript.options.mem.max", 64 * 1024)
+        options.set_preference("general.useragent.override",
+            "Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:128.0) Gecko/20100101 Firefox/128.0")
+        options.set_preference("dom.webdriver.enabled", False)
+        options.set_preference("useAutomationExtension", False)
+        options.set_preference("dom.webnotifications.enabled", False)
+        options.set_preference("dom.push.enabled", False)
+        options.set_preference("permissions.default.desktop-notification", 2)
+        options.set_preference("geo.enabled", False)
+        options.set_preference("media.hardware-video-decoding.enabled", False)
+        options.set_preference("layers.acceleration.disabled", True)
 
-        # Window size
-        options.add_argument("--window-size=1280,720")
-        options.add_argument("--user-agent=Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/128.0.0.0 Safari/537.36")
-
-        # Disable images to save memory
-        prefs = {
-            "profile.managed_default_content_settings.images": 2,
-            "profile.default_content_setting_values.notifications": 2,
-            "disk-cache-size": 0,
-        }
-        options.add_experimental_option("prefs", prefs)
-
-        service = ChromeService(executable_path="/usr/bin/chromedriver")
-        driver = webdriver.Chrome(options=options, service=service)
-        log("[+] Chromium driver loaded")
+        service = webdriver.FirefoxService(
+            executable_path="/usr/local/bin/geckodriver",
+            log_output=sys.stdout,
+        )
+        driver = webdriver.Firefox(options=options, service=service)
+        log("[+] Firefox driver loaded")
         return driver
 
     def _init_services(self):
@@ -134,13 +114,187 @@ class Bot:
         except Exception:
             pass
 
+    # ===================================================================
+    # CAPTCHA SOLVER via requests (xtekky approach)
+    # ===================================================================
+    def _solve_captcha_via_requests(self):
+        """
+        Resolve captcha using requests only - no browser needed.
+        Based on xtekky/TikTok-ViewBot v2.py solve() method.
+        Returns PHPSESSID cookie dict for injection into browser.
+        """
+        log("[~] Solving CAPTCHA via requests (lightweight)...")
+
+        session = Session()
+        session.headers = {
+            'authority': 'zefoy.com',
+            'origin': 'https://zefoy.com',
+            'user-agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/128.0.0.0 Safari/537.36',
+            'accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,*/*;q=0.8',
+            'accept-language': 'en-US,en;q=0.9',
+        }
+
+        for attempt in range(1, 8):
+            log(f"[~] Captcha request attempt {attempt}/7")
+
+            # Get page source
+            response = session.get('https://zefoy.com')
+            source_code = response.text.replace('&amp;', '&')
+
+            # Extract captcha token inputs
+            captcha_tokens = re.findall(r'<input type="hidden" name="(.*)">', source_code)
+            if 'token' in captcha_tokens:
+                captcha_tokens.remove('token')
+
+            # Extract captcha image URL
+            captcha_urls = re.findall(r'img src="([^"]*)"', source_code)
+            if not captcha_urls:
+                log("[!] No captcha image found in HTML")
+                time.sleep(2)
+                continue
+
+            captcha_url = captcha_urls[0]
+            if not captcha_url.startswith('http'):
+                captcha_url = 'https://zefoy.com' + captcha_url
+
+            # Extract answer input name
+            answer_matches = re.findall(r'type="text" name="(.*)" oninput="this.value', source_code)
+            if not answer_matches:
+                # Try alternative patterns
+                answer_matches = re.findall(r'<input[^>]*name="([^"]*)"[^>]*placeholder="[^"]*[Cc]aptcha[^"]*"', source_code)
+            if not answer_matches:
+                answer_matches = re.findall(r'<input[^>]*type="text"[^>]*name="([^"]*)"', source_code)
+
+            if not answer_matches:
+                log("[!] Could not find captcha answer input name")
+                time.sleep(2)
+                continue
+
+            token_answer = answer_matches[0]
+            log(f"[~] Captcha URL: {captcha_url[:60]}...")
+            log(f"[~] Answer field: {token_answer}")
+
+            # Download captcha image
+            img_response = session.get(captcha_url)
+            if img_response.status_code != 200:
+                log(f"[!] Failed to download captcha image: {img_response.status_code}")
+                time.sleep(2)
+                continue
+
+            # Save for debug
+            ts = int(time.time())
+            raw_path = os.path.join(DEBUG_DIR, f"captcha_req_{ts}.png")
+            with open(raw_path, "wb") as f:
+                f.write(img_response.content)
+
+            # OCR with Tesseract
+            captcha_text = self._ocr_image(img_response.content)
+            if not captcha_text:
+                log("[!] OCR failed, retrying with fresh page...")
+                time.sleep(2)
+                continue
+
+            log(f"[+] OCR result: '{captcha_text}'")
+
+            # Build form data
+            data = {token_answer: captcha_text}
+            for token_value in captcha_tokens:
+                if '" value="' in token_value:
+                    token, value = token_value.split('" value="', 1)
+                    data[token] = value
+            data['token'] = ''
+
+            log(f"[~] Submitting captcha...")
+            submit_response = session.post('https://zefoy.com', data=data)
+
+            # Check if captcha was accepted
+            if 'name="' in submit_response.text and 'placeholder' in submit_response.text:
+                # Try to find the video URL input box - means captcha passed
+                try:
+                    re.findall(r'remove-spaces" name="(.*)" placeholder', submit_response.text)[0]
+                    log("[+] Captcha solved successfully via requests!")
+                    phpsessid = session.cookies.get('PHPSESSID')
+                    if phpsessid:
+                        return {'name': 'PHPSESSID', 'value': phpsessid}
+                    else:
+                        log("[!] No PHPSESSID cookie found")
+                        return None
+                except IndexError:
+                    pass
+
+            # Check for error indicators
+            if "wrong" in submit_response.text.lower() or "invalid" in submit_response.text.lower():
+                log("[!] Captcha rejected, retrying...")
+                time.sleep(2)
+                continue
+
+            # Check if we got redirected or have the main page
+            if "zefoy" in submit_response.text.lower():
+                phpsessid = session.cookies.get('PHPSESSID')
+                if phpsessid:
+                    log("[+] Captcha likely solved, proceeding with cookie")
+                    return {'name': 'PHPSESSID', 'value': phpsessid}
+
+            time.sleep(2)
+
+        log("[x] Could not solve captcha via requests after all attempts")
+        return None
+
+    def _ocr_image(self, img_bytes):
+        """OCR with PIL + Tesseract."""
+        try:
+            img = Image.open(BytesIO(img_bytes))
+
+            # Preprocess
+            img = ImageOps.grayscale(img)
+            w, h = img.size
+            img = img.resize((w * 3, h * 3), Image.Resampling.LANCZOS)
+            enhancer = ImageEnhance.Contrast(img)
+            img = enhancer.enhance(2.5)
+            img = img.filter(ImageFilter.SHARPEN)
+            img = img.point(lambda x: 0 if x < 120 else 255, "1")
+            img = img.convert("L")
+
+            # Save processed
+            ts = int(time.time())
+            proc_path = os.path.join(DEBUG_DIR, f"captcha_req_proc_{ts}.png")
+            img.save(proc_path)
+
+            config = r"--oem 3 --psm 7 -c tessedit_char_whitelist=ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789"
+            txt = pytesseract.image_to_string(img, config=config)
+            clean = re.sub(r"[^A-Za-z0-9]", "", txt).strip()
+            log(f"[~] OCR raw: '{txt.strip()}' | cleaned: '{clean}'")
+
+            if 3 <= len(clean) <= 10:
+                return clean
+            return ""
+        except Exception as e:
+            log(f"[!] OCR error: {e}")
+            return ""
+
+    # ===================================================================
+    # MAIN FLOW
+    # ===================================================================
     def start(self):
         for page_attempt in range(1, 4):
             log(f"=== Page attempt {page_attempt}/3 ===")
             try:
-                self.driver.get("https://zefoy.com")
-                self._dismiss_alert()
-                self._solve_captcha()
+                # Step 1: Solve captcha via requests (lightweight, no browser memory yet)
+                cookie = self._solve_captcha_via_requests()
+
+                if not cookie:
+                    log("[!] Failed to solve captcha via requests, falling back to browser method...")
+                    # Fallback: open browser and solve captcha there
+                    self.driver = self._init_driver()
+                    self._solve_captcha_browser()
+                else:
+                    # Step 2: Open browser with cookie already solved
+                    log("[~] Opening browser with solved captcha cookie...")
+                    self.driver = self._init_driver()
+                    self.driver.get("https://zefoy.com")
+                    self.driver.add_cookie(cookie)
+                    self.driver.refresh()
+                    log("[+] Cookie injected, page refreshed")
 
                 time.sleep(2)
                 self.driver.refresh()
@@ -156,6 +310,7 @@ class Bot:
                 video_url = self._choose_video_url()
                 self._start_service(service, video_url)
                 return
+
             except Exception as e:
                 log(f"[!] Page attempt {page_attempt} failed: {str(e)[:120]}")
                 if page_attempt < 3:
@@ -167,8 +322,12 @@ class Bot:
             finally:
                 gc.collect()
 
-    def _solve_captcha(self):
-        log("[~] Scanning for CAPTCHA...")
+    def _solve_captcha_browser(self):
+        """Fallback: solve captcha using browser + OCR."""
+        log("[~] Solving CAPTCHA via browser (fallback)...")
+
+        self.driver.get("https://zefoy.com")
+        self._dismiss_alert()
 
         try:
             self._wait_for_element(By.TAG_NAME, "input", timeout=30)
@@ -179,7 +338,7 @@ class Bot:
         self._dismiss_alert()
 
         for solve_attempt in range(1, 6):
-            log(f"[~] Captcha solve attempt {solve_attempt}/5")
+            log(f"[~] Browser captcha attempt {solve_attempt}/5")
             self._dismiss_alert()
 
             if self._is_captcha_cleared():
@@ -193,7 +352,7 @@ class Bot:
                 time.sleep(2)
                 continue
 
-            text = self._ocr_attempt(png)
+            text = self._ocr_image(png)
 
             if text:
                 log(f'[+] OCR result: "{text}"')
@@ -215,8 +374,8 @@ class Bot:
                 log("[!] No OCR result, waiting before retry...")
                 time.sleep(2)
 
-        log("[!] All captcha solve attempts failed on this page")
-        raise Exception("Could not solve captcha after 5 attempts")
+        log("[!] All browser captcha attempts failed")
+        raise Exception("Could not solve captcha")
 
     def _is_captcha_cleared(self):
         try:
@@ -249,10 +408,10 @@ class Bot:
                 continue
         try:
             png = self.driver.get_screenshot_as_png()
-            img = Image.open(io.BytesIO(png))
+            img = Image.open(BytesIO(png))
             w, h = img.size
             cropped = img.crop((0, 0, w, int(h * 0.4)))
-            buf = io.BytesIO()
+            buf = BytesIO()
             cropped.save(buf, format="PNG")
             return buf.getvalue()
         except Exception:
@@ -274,45 +433,6 @@ class Bot:
                 inp.submit()
         except UnexpectedAlertPresentException:
             self._dismiss_alert()
-
-    def _ocr_attempt(self, png_bytes):
-        """Single lightweight OCR attempt with PIL preprocessing."""
-        try:
-            img = Image.open(io.BytesIO(png_bytes))
-            # Save raw for debug
-            self._save_pil(img, "captcha_raw")
-
-            # Preprocess
-            img = ImageOps.grayscale(img)
-            w, h = img.size
-            img = img.resize((w * 3, h * 3), Image.Resampling.LANCZOS)
-            enhancer = ImageEnhance.Contrast(img)
-            img = enhancer.enhance(2.5)
-            img = img.filter(ImageFilter.SHARPEN)
-            # Binary threshold
-            img = img.point(lambda x: 0 if x < 120 else 255, "1")
-            img = img.convert("L")
-
-            self._save_pil(img, "captcha_proc")
-
-            config = r"--oem 3 --psm 7 -c tessedit_char_whitelist=ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789"
-            txt = pytesseract.image_to_string(img, config=config)
-            clean = re.sub(r"[^A-Za-z0-9]", "", txt).strip()
-            log(f"[~] OCR raw: '{txt.strip()}' | cleaned: '{clean}'")
-
-            if 3 <= len(clean) <= 10:
-                return clean
-            return ""
-        except Exception as e:
-            log(f"[!] OCR error: {e}")
-            return ""
-
-    def _save_pil(self, img, name):
-        try:
-            path = os.path.join(DEBUG_DIR, f"{name}_{int(time.time())}.png")
-            img.save(path)
-        except Exception:
-            pass
 
     def _check_services_status(self):
         for svc in self.services:
