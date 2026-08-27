@@ -2,13 +2,15 @@ import os
 import sys
 import re
 import threading
+import base64
 from io           import BytesIO
 from base64       import b64decode
 from time         import sleep, time
 from datetime     import datetime
-from urllib.parse import unquote
+from urllib.parse import unquote, urlparse
 
 import requests
+from requests.auth import HTTPProxyAuth
 from colorama import Fore, init; init()
 
 # ---------------------------------------------------------------------------
@@ -17,9 +19,6 @@ from colorama import Fore, init; init()
 TIKTOK_URL = os.environ.get("TIKTOK_VIDEO_URL", "").strip()
 SERVICE    = os.environ.get("TIKTOK_SERVICE", "Views").strip()
 HEADLESS   = not sys.stdin.isatty() or bool(os.environ.get("RENDER"))
-
-# Proxy residencial — formato: http://user:pass@host:port
-# ou lista separada por vírgula para rotação
 PROXY_RAW  = os.environ.get("PROXY_URL", "").strip()
 
 if not TIKTOK_URL:
@@ -36,18 +35,18 @@ HEADERS  = {
 }
 
 # ---------------------------------------------------------------------------
-# Proxy rotation
+# Proxy
 # ---------------------------------------------------------------------------
 _proxy_list  = [p.strip() for p in PROXY_RAW.split(",") if p.strip()] if PROXY_RAW else []
 _proxy_index = 0
 
-def get_proxies() -> dict | None:
+def next_proxy() -> str | None:
     global _proxy_index
     if not _proxy_list:
         return None
-    proxy = _proxy_list[_proxy_index % len(_proxy_list)]
+    p = _proxy_list[_proxy_index % len(_proxy_list)]
     _proxy_index += 1
-    return {"http": proxy, "https": proxy}
+    return p
 
 # ---------------------------------------------------------------------------
 # Helpers
@@ -67,16 +66,26 @@ def decode(text) -> str:
 def new_session() -> requests.Session:
     s = requests.Session()
     s.headers.update(HEADERS)
-    proxies = get_proxies()
-    if proxies:
-        s.proxies.update(proxies)
-        log(f"Usando proxy: {list(proxies.values())[0].split('@')[-1]}")
+
+    proxy_url = next_proxy()
+    if proxy_url:
+        parsed = urlparse(proxy_url)
+        host_port = f"{parsed.hostname}:{parsed.port}"
+        log(f"Usando proxy: {host_port}")
+
+        # Passa proxy nas duas formas: via proxies dict E via HTTPProxyAuth
+        # O requests tem um bug conhecido onde credenciais no URL não são
+        # enviadas no header CONNECT para túneis HTTPS — HTTPProxyAuth resolve isso
+        s.proxies.update({"http": proxy_url, "https": proxy_url})
+        if parsed.username and parsed.password:
+            s.auth = HTTPProxyAuth(parsed.username, parsed.password)
     else:
-        log("Sem proxy — IP direto do Render (pode ser bloqueado pelo zefoy)")
+        log("AVISO: sem proxy — IP do Render provavelmente bloqueado pelo zefoy")
+
     return s
 
 # ---------------------------------------------------------------------------
-# Captcha — API pública plowside (resolve captcha de imagem do zefoy)
+# Captcha API
 # ---------------------------------------------------------------------------
 CAPTCHA_API = "https://plowsidecaptcha.pythonanywhere.com/captcha"
 
@@ -187,7 +196,7 @@ def login(session: requests.Session) -> str | None:
     return None
 
 # ---------------------------------------------------------------------------
-# Serviços
+# Servicos
 # ---------------------------------------------------------------------------
 def get_services(session: requests.Session) -> dict:
     try:
@@ -229,10 +238,8 @@ def find_and_send(session: requests.Session, video_key: str, endpoint: str) -> s
         sleep(30)
         return "rate_limit"
 
-    # Bloqueio por IP de datacenter — "An error occurred" sem cooldown timer
-    if "error occurred" in video_info.lower() or "error" in video_info.lower():
-        log(f"Erro do zefoy (possivel bloqueio de IP): {video_info[:200]}")
-        log("Aguardando 120s antes de tentar novamente...")
+    if "error occurred" in video_info.lower():
+        log(f"Erro do zefoy (bloqueio de IP?): {video_info[:200]}")
         sleep(120)
         return "ip_blocked"
 
@@ -255,7 +262,6 @@ def find_and_send(session: requests.Session, video_key: str, endpoint: str) -> s
             )
             result = decode(resp2.text)
 
-            # Verifica bloqueio no segundo POST também
             if "error occurred" in result.lower():
                 log(f"Bloqueio no segundo POST: {result[:200]}")
                 sleep(120)
@@ -308,12 +314,10 @@ def start_http_server():
 # Main loop
 # ---------------------------------------------------------------------------
 def main():
-    # Inicia HTTP server em thread separada (Render free tier)
     threading.Thread(target=start_http_server, daemon=True).start()
 
     if not _proxy_list:
         log("AVISO: PROXY_URL nao definida. IPs de datacenter sao bloqueados pelo zefoy.")
-        log("Defina PROXY_URL=http://user:pass@host:port no Render para resolver.")
 
     log(f"TikTok ViewBot | URL: {TIKTOK_URL} | Servico: {SERVICE}")
 
@@ -360,10 +364,9 @@ def main():
                 sleep(300)
                 break
             elif result == "ip_blocked":
-                # Rotaciona proxy na proxima sessao
                 consecutive_errors += 1
                 if consecutive_errors >= 3:
-                    log("Bloqueio persistente — reiniciando sessao com novo proxy")
+                    log("Bloqueio persistente — reiniciando sessao")
                     break
             elif result in ("ok", "cooldown_done", "rate_limit", "service_offline"):
                 consecutive_errors = 0
