@@ -1,6 +1,6 @@
 """
-TikTok Bot - Zefoy CAPTCHA solver with aggressive OCR retry strategy.
-Uses OpenCV headless (lighter) + PIL fallback + multi-parameter retry.
+TikTok Bot - Ultra-lightweight edition for 512MB containers.
+Chromium (lighter than Firefox) + PIL + Tesseract OCR.
 """
 
 import re
@@ -13,19 +13,12 @@ import time
 from datetime import datetime
 from PIL import Image, ImageFilter, ImageOps, ImageEnhance
 
-# Try OpenCV headless first, fallback to PIL-only
-try:
-    import cv2
-    import numpy as np
-    HAS_OPENCV = True
-except ImportError:
-    HAS_OPENCV = False
-    print("[!] OpenCV not available, using PIL-only fallback")
-
 import pytesseract
 
 from selenium import webdriver
 from selenium.webdriver.common.by import By
+from selenium.webdriver.chrome.options import Options as ChromeOptions
+from selenium.webdriver.chrome.service import Service as ChromeService
 from selenium.common.exceptions import (
     NoSuchElementException,
     TimeoutException,
@@ -56,51 +49,70 @@ class Bot:
 
     def _print_banner(self):
         print("+--------------------------------------------------------+")
-        print("|   TikTok Bot - Aggressive CAPTCHA Retry                |")
-        ocr_label = "OpenCV+Tesseract" if HAS_OPENCV else "PIL+Tesseract"
-        print(f"|   OCR: {ocr_label:<47}|")
+        print("|   TikTok Bot - Ultra-Lightweight (Chromium)            |")
+        print("|   512MB RAM optimized | PIL + Tesseract OCR            |")
         print("+--------------------------------------------------------+")
         print()
 
     def _init_driver(self):
-        log("[~] Loading Firefox driver...")
-        options = webdriver.FirefoxOptions()
+        log("[~] Loading Chromium driver (memory-optimized)...")
+        options = ChromeOptions()
 
-        for binary in ["/usr/bin/firefox-esr", "/usr/bin/firefox"]:
+        # Find chromium binary
+        for binary in ["/usr/bin/chromium", "/usr/bin/chromium-browser", "/usr/bin/google-chrome-stable"]:
             if os.path.exists(binary):
                 options.binary_location = binary
                 break
 
-        options.add_argument("-headless")
-        options.set_preference("security.sandbox.content.level", 0)
-        options.set_preference("security.sandbox.gpu.level", 0)
-        options.set_preference("security.sandbox.media.level", 0)
-        options.set_preference("security.sandbox.content.tempdir.level", 0)
-        options.set_preference("browser.tabs.crashReporting.sendReport", False)
-        options.set_preference("toolkit.startup.max_resumed_crashes", -1)
-        options.set_preference("datareporting.healthreport.uploadEnabled", False)
-        options.set_preference("datareporting.policy.dataSubmissionEnabled", False)
-        options.set_preference("services.settings.server", "")
-        options.set_preference("browser.cache.disk.enable", False)
-        options.set_preference("browser.cache.memory.enable", False)
-        options.set_preference("browser.sessionstore.resume_from_crash", False)
-        options.set_preference("dom.ipc.processCount", 1)
-        options.set_preference("javascript.options.mem.max", 128 * 1024)
-        options.set_preference("general.useragent.override",
-            "Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:128.0) Gecko/20100101 Firefox/128.0")
-        options.set_preference("dom.webdriver.enabled", False)
-        options.set_preference("useAutomationExtension", False)
-        options.set_preference("dom.webnotifications.enabled", False)
-        options.set_preference("dom.push.enabled", False)
-        options.set_preference("permissions.default.desktop-notification", 2)
-        options.set_preference("geo.enabled", False)
+        # Essential headless + memory flags
+        options.add_argument("--headless=new")
+        options.add_argument("--no-sandbox")
+        options.add_argument("--disable-dev-shm-usage")  # CRITICAL for containers
+        options.add_argument("--disable-gpu")
+        options.add_argument("--disable-software-rasterizer")
+        options.add_argument("--disable-extensions")
+        options.add_argument("--disable-background-networking")
+        options.add_argument("--disable-background-timer-throttling")
+        options.add_argument("--disable-backgrounding-occluded-windows")
+        options.add_argument("--disable-breakpad")
+        options.add_argument("--disable-component-update")
+        options.add_argument("--disable-default-apps")
+        options.add_argument("--disable-features=TranslateUI")
+        options.add_argument("--disable-hang-monitor")
+        options.add_argument("--disable-ipc-flooding-protection")
+        options.add_argument("--disable-popup-blocking")
+        options.add_argument("--disable-prompt-on-repost")
+        options.add_argument("--disable-renderer-backgrounding")
+        options.add_argument("--force-color-profile=srgb")
+        options.add_argument("--metrics-recording-only")
+        options.add_argument("--no-first-run")
+        options.add_argument("--safebrowsing-disable-auto-update")
+        options.add_argument("--password-store=basic")
+        options.add_argument("--use-mock-keychain")
+        options.add_argument("--disable-sync")
+        options.add_argument("--disable-web-security")
+        options.add_argument("--disable-features=IsolateOrigins,site-per-process")
+        options.add_argument("--disable-site-isolation-trials")
+        options.add_argument("--memory-model=low")
+        options.add_argument("--max_old_space_size=128")
+        options.add_argument("--js-flags=--max-old-space-size=128")
+        options.add_argument("--single-process")  # Experimental: saves RAM, may be unstable
 
-        service = webdriver.FirefoxService(
-            executable_path="/usr/local/bin/geckodriver",
-            log_output=sys.stdout,
-        )
-        driver = webdriver.Firefox(options=options, service=service)
-        log("[+] Driver loaded")
+        # Window size
+        options.add_argument("--window-size=1280,720")
+        options.add_argument("--user-agent=Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/128.0.0.0 Safari/537.36")
+
+        # Disable images to save memory
+        prefs = {
+            "profile.managed_default_content_settings.images": 2,
+            "profile.default_content_setting_values.notifications": 2,
+            "disk-cache-size": 0,
+        }
+        options.add_experimental_option("prefs", prefs)
+
+        service = ChromeService(executable_path="/usr/bin/chromedriver")
+        driver = webdriver.Chrome(options=options, service=service)
+        log("[+] Chromium driver loaded")
         return driver
 
     def _init_services(self):
@@ -181,10 +193,7 @@ class Bot:
                 time.sleep(2)
                 continue
 
-            text = self._ocr_multi_attempt(png)
-            if not text:
-                log("[!] OCR returned empty, trying different params...")
-                text = self._ocr_with_fallback_params(png)
+            text = self._ocr_attempt(png)
 
             if text:
                 log(f'[+] OCR result: "{text}"')
@@ -266,117 +275,37 @@ class Bot:
         except UnexpectedAlertPresentException:
             self._dismiss_alert()
 
-    def _ocr_multi_attempt(self, png_bytes):
-        if not HAS_OPENCV:
-            return self._ocr_pil_only(png_bytes)
-        try:
-            nparr = np.frombuffer(png_bytes, np.uint8)
-            img = cv2.imdecode(nparr, cv2.IMREAD_COLOR)
-            if img is None:
-                return self._ocr_pil_only(png_bytes)
-            self._save_cv(img, "captcha_raw")
-            results = []
-            text = self._ocr_cv_pipeline(img, scale=3, blur=(5,5), morph_k=2)
-            if text: results.append(text)
-            text = self._ocr_cv_pipeline(img, scale=4, blur=(3,3), morph_k=1, contrast=2.0)
-            if text: results.append(text)
-            text = self._ocr_cv_pipeline(img, scale=3, blur=None, morph_k=1)
-            if text: results.append(text)
-            text = self._ocr_cv_pipeline(img, scale=3, blur=(5,5), morph_k=2, invert=True)
-            if text: results.append(text)
-            text = self._ocr_cv_pipeline(img, scale=3, blur=(3,3), morph_k=3, dilate_first=True)
-            if text: results.append(text)
-            if results:
-                from collections import Counter
-                best = Counter(results).most_common(1)[0][0]
-                log(f"[~] OCR candidates: {results} -> best: {best}")
-                return best
-            return ""
-        except Exception as e:
-            log(f"[!] OpenCV OCR error: {e}")
-            return self._ocr_pil_only(png_bytes)
-
-    def _ocr_cv_pipeline(self, img, scale=3, blur=(5,5), morph_k=2, contrast=1.0, invert=False, dilate_first=False):
-        try:
-            gray = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)
-            h, w = gray.shape
-            gray = cv2.resize(gray, (w * scale, h * scale), interpolation=cv2.INTER_CUBIC)
-            if contrast != 1.0:
-                gray = cv2.convertScaleAbs(gray, alpha=contrast, beta=0)
-            if blur:
-                gray = cv2.GaussianBlur(gray, blur, 0)
-            thresh = cv2.adaptiveThreshold(gray, 255, cv2.ADAPTIVE_THRESH_GAUSSIAN_C,
-                                           cv2.THRESH_BINARY, 11, 2)
-            if dilate_first:
-                kernel = np.ones((2,2), np.uint8)
-                thresh = cv2.dilate(thresh, kernel, iterations=1)
-                thresh = cv2.erode(thresh, kernel, iterations=1)
-            else:
-                kernel = cv2.getStructuringElement(cv2.MORPH_RECT, (morph_k, morph_k))
-                thresh = cv2.morphologyEx(thresh, cv2.MORPH_CLOSE, kernel)
-            if invert:
-                thresh = cv2.bitwise_not(thresh)
-            else:
-                white = cv2.countNonZero(thresh)
-                if white > thresh.size * 0.7:
-                    thresh = cv2.bitwise_not(thresh)
-            self._save_cv(thresh, f"captcha_proc_s{scale}")
-            configs = [
-                r"--oem 3 --psm 7 -c tessedit_char_whitelist=ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789",
-                r"--oem 3 --psm 8 -c tessedit_char_whitelist=ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789",
-            ]
-            for cfg in configs:
-                txt = pytesseract.image_to_string(thresh, config=cfg)
-                clean = re.sub(r"[^A-Za-z0-9]", "", txt).strip()
-                if 3 <= len(clean) <= 10:
-                    return clean
-            return ""
-        except Exception:
-            return ""
-
-    def _ocr_with_fallback_params(self, png_bytes):
-        return self._ocr_pil_only(png_bytes, aggressive=True)
-
-    def _ocr_pil_only(self, png_bytes, aggressive=False):
+    def _ocr_attempt(self, png_bytes):
+        """Single lightweight OCR attempt with PIL preprocessing."""
         try:
             img = Image.open(io.BytesIO(png_bytes))
+            # Save raw for debug
+            self._save_pil(img, "captcha_raw")
+
+            # Preprocess
             img = ImageOps.grayscale(img)
             w, h = img.size
             img = img.resize((w * 3, h * 3), Image.Resampling.LANCZOS)
             enhancer = ImageEnhance.Contrast(img)
-            img = enhancer.enhance(3.0 if aggressive else 2.0)
+            img = enhancer.enhance(2.5)
             img = img.filter(ImageFilter.SHARPEN)
-            if aggressive:
-                img = img.filter(ImageFilter.SHARPEN)
-                img = img.filter(ImageFilter.MedianFilter(size=3))
-            img = img.point(lambda x: 0 if x < 100 else 255, "1")
+            # Binary threshold
+            img = img.point(lambda x: 0 if x < 120 else 255, "1")
             img = img.convert("L")
-            self._save_pil(img, "captcha_pil")
-            configs = [
-                r"--oem 3 --psm 7 -c tessedit_char_whitelist=ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789",
-                r"--oem 3 --psm 8 -c tessedit_char_whitelist=ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789",
-            ]
-            results = []
-            for cfg in configs:
-                txt = pytesseract.image_to_string(img, config=cfg)
-                clean = re.sub(r"[^A-Za-z0-9]", "", txt).strip()
-                if clean:
-                    results.append(clean)
-            if results:
-                from collections import Counter
-                best = Counter(results).most_common(1)[0][0]
-                if 3 <= len(best) <= 10:
-                    return best
-            return ""
-        except Exception:
-            return ""
 
-    def _save_cv(self, img, name):
-        try:
-            path = os.path.join(DEBUG_DIR, f"{name}_{int(time.time())}.png")
-            cv2.imwrite(path, img)
-        except Exception:
-            pass
+            self._save_pil(img, "captcha_proc")
+
+            config = r"--oem 3 --psm 7 -c tessedit_char_whitelist=ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789"
+            txt = pytesseract.image_to_string(img, config=config)
+            clean = re.sub(r"[^A-Za-z0-9]", "", txt).strip()
+            log(f"[~] OCR raw: '{txt.strip()}' | cleaned: '{clean}'")
+
+            if 3 <= len(clean) <= 10:
+                return clean
+            return ""
+        except Exception as e:
+            log(f"[!] OCR error: {e}")
+            return ""
 
     def _save_pil(self, img, name):
         try:
