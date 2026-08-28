@@ -126,6 +126,14 @@ def get_captcha(session: requests.Session) -> dict:
 
     log(f"HTML[0:600]: {repr(html[:600])}")
 
+    # Debug: mostra todos os inputs, imgs e forms para diagnosticar estrutura do captcha
+    all_inputs = re.findall(r'<input[^>]+>', html)
+    log(f"inputs encontrados: {all_inputs[:10]}")
+    all_imgs = re.findall(r'<img[^>]+>', html)
+    log(f"imgs encontradas: {all_imgs[:5]}")
+    all_forms = re.findall(r'<form[^>]+>', html)
+    log(f"forms encontrados: {all_forms[:5]}")
+
     captcha_fields = {}
     for name, value in re.findall(r'<input type="hidden" name="(.*?)" value="(.*?)">', html):
         captcha_fields[name] = value
