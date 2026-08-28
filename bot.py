@@ -20,7 +20,7 @@ GEMINI_KEY = os.environ.get("GEMINI_API_KEY", "")
 OPENAI_KEY = os.environ.get("OPENAI_API_KEY", "")
 PORT = int(os.environ.get("PORT", 8080))
 
-# ── HTTP keep-alive ───────────────────────────────────────────────────────────
+
 class Handler(BaseHTTPRequestHandler):
     def do_GET(self):
         self.send_response(200)
@@ -37,7 +37,6 @@ def start_http():
 
 threading.Thread(target=start_http, daemon=True).start()
 
-# ── Playwright ────────────────────────────────────────────────────────────────
 from playwright.sync_api import sync_playwright
 
 
@@ -61,8 +60,7 @@ CAPTCHA_PROMPT = (
 
 
 def _clean_word(text: str) -> str:
-    word = (text or "").strip().lower()
-    return re.sub(r"[^a-z]", "", word)
+    return re.sub(r"[^a-z]", "", (text or "").strip().lower())
 
 
 def solve_captcha_gemini(img_bytes: bytes) -> str:
@@ -71,21 +69,18 @@ def solve_captcha_gemini(img_bytes: bytes) -> str:
     if not GEMINI_KEY:
         return ""
     b64 = base64.b64encode(img_bytes).decode()
-    models = ["gemini-3.5-flash-lite", "gemini-3.6-flash"]
-    for model in models:
+    for model in ["gemini-3.5-flash-lite", "gemini-3.6-flash"]:
         url = (
             f"https://generativelanguage.googleapis.com/v1beta/models/"
             f"{model}:generateContent?key={GEMINI_KEY}"
         )
         payload = {
-            "contents": [
-                {
-                    "parts": [
-                        {"inline_data": {"mime_type": "image/png", "data": b64}},
-                        {"text": CAPTCHA_PROMPT},
-                    ]
-                }
-            ],
+            "contents": [{
+                "parts": [
+                    {"inline_data": {"mime_type": "image/png", "data": b64}},
+                    {"text": CAPTCHA_PROMPT},
+                ]
+            }],
             "generationConfig": {"maxOutputTokens": 16, "temperature": 0},
         }
         try:
@@ -104,7 +99,6 @@ def solve_captcha_gemini(img_bytes: bytes) -> str:
             if word:
                 log.info(f"Gemini ({model}) captcha → '{word}'")
                 return word
-            log.info(f"Gemini {model} resposta vazia: {data}")
         except Exception as e:
             log.info(f"Gemini {model} erro: {e}")
     return ""
@@ -126,20 +120,16 @@ def solve_captcha_openai(img_bytes: bytes) -> str:
             json={
                 "model": "gpt-4o-mini",
                 "max_tokens": 16,
-                "messages": [
-                    {
-                        "role": "user",
-                        "content": [
-                            {
-                                "type": "image_url",
-                                "image_url": {
-                                    "url": f"data:image/png;base64,{b64}",
-                                },
-                            },
-                            {"type": "text", "text": CAPTCHA_PROMPT},
-                        ],
-                    }
-                ],
+                "messages": [{
+                    "role": "user",
+                    "content": [
+                        {
+                            "type": "image_url",
+                            "image_url": {"url": f"data:image/png;base64,{b64}"},
+                        },
+                        {"type": "text", "text": CAPTCHA_PROMPT},
+                    ],
+                }],
             },
             timeout=30,
         )
@@ -147,11 +137,7 @@ def solve_captcha_openai(img_bytes: bytes) -> str:
         if resp.status_code != 200:
             log.info(f"OpenAI HTTP {resp.status_code}: {data}")
             return ""
-        text = (
-            data.get("choices", [{}])[0]
-            .get("message", {})
-            .get("content", "")
-        )
+        text = data.get("choices", [{}])[0].get("message", {}).get("content", "")
         word = _clean_word(text)
         if word:
             log.info(f"OpenAI captcha → '{word}'")
@@ -168,7 +154,7 @@ def solve_captcha(img_bytes: bytes) -> str:
     word = solve_captcha_openai(img_bytes)
     if word:
         return word
-    log.info("Nenhum solver de captcha conseguiu resolver (keys em falta ou API erro)")
+    log.info("Captcha não resolvido (keys ou API)")
     return ""
 
 
@@ -181,16 +167,20 @@ SERVICE_MAP = {
     "favorites": "Favorites",
 }
 
+# botões CSS típicos do zefoy
+SERVICE_CSS = {
+    "views": ".t-views-button",
+    "likes": ".t-hearts-button",
+    "hearts": ".t-hearts-button",
+    "followers": ".t-followers-button",
+    "shares": ".t-shares-button",
+    "favorites": ".t-favorites-button",
+}
+
 
 def run_bot():
     proxy = get_proxy_config()
-    if proxy:
-        log.info(f"Proxy configurado: {proxy.get('server')}")
-    else:
-        log.info("Sem PROXY_URL — a correr sem proxy")
-
-    if not GEMINI_KEY and not OPENAI_KEY:
-        log.info("AVISO: GEMINI_API_KEY e OPENAI_API_KEY vazias — captcha não será resolvido")
+    log.info(f"Proxy: {proxy.get('server') if proxy else 'nenhum'}")
 
     with sync_playwright() as p:
         browser = p.chromium.launch(
@@ -213,11 +203,7 @@ def run_bot():
         for attempt in range(1, 6):
             log.info(f"Tentativa de login {attempt}/5")
             try:
-                page.goto(
-                    "https://zefoy.com",
-                    wait_until="domcontentloaded",
-                    timeout=60000,
-                )
+                page.goto("https://zefoy.com", wait_until="domcontentloaded", timeout=60000)
                 log.info(f"Página carregada: {len(page.content())} chars")
 
                 page.wait_for_function(
@@ -227,7 +213,7 @@ def run_bot():
                 )
                 img_el = page.query_selector("#captcha-img")
                 if not img_el:
-                    log.info("Elemento #captcha-img não encontrado")
+                    log.info("#captcha-img não encontrado")
                     time.sleep(15)
                     continue
 
@@ -244,172 +230,161 @@ def run_bot():
                 page.click("button[type='submit'], .btn-primary")
                 time.sleep(3)
 
-                body = page.content().lower()
-                if "zefoy.com" in page.url and "captcha" not in body:
+                if "zefoy.com" in page.url and "captcha" not in page.content().lower():
                     log.info("Login OK!")
                     logged_in = True
                     break
-                else:
-                    log.info("Login falhou — captcha errado ou página recarregou")
-                    time.sleep(15)
-
+                log.info("Login falhou — captcha errado?")
+                time.sleep(15)
             except Exception as e:
-                log.info(f"Erro na tentativa {attempt}: {e}")
+                log.info(f"Erro login {attempt}: {e}")
                 time.sleep(15)
 
         if not logged_in:
-            log.info("Login falhou 5x. Reiniciando em 60s...")
+            log.info("Login falhou 5x. Reinicio em 60s...")
             time.sleep(60)
             browser.close()
             return
 
-        # ── Loop do serviço ──────────────────────────────────────────────────
         service_label = SERVICE_MAP.get(SERVICE, "Views")
         log.info(f"Serviço: {service_label} | URL: {VIDEO_URL}")
-
         if not VIDEO_URL:
-            log.info("TIKTOK_VIDEO_URL vazia — define a env var")
+            log.info("TIKTOK_VIDEO_URL vazia")
             time.sleep(60)
             browser.close()
             return
 
+        css_btn = SERVICE_CSS.get(SERVICE)
         service_selectors = [
-            f"text={service_label}",
+            css_btn,
             f"button:has-text('{service_label}')",
-            f".t-{SERVICE}-button",
-            f".t-views-button" if SERVICE in ("views", "view") else None,
-            f".t-hearts-button" if SERVICE in ("likes", "hearts") else None,
-            f"h5:has-text('{service_label}')",
-            f".card-title:has-text('{service_label}')",
-            f"div:has-text('{service_label}') >> button",
+            f".btn:has-text('{service_label}')",
+            f"div.card:has-text('{service_label}') button",
+            f"h5:has-text('{service_label}') >> xpath=../..//button",
+            f"text={service_label}",
         ]
         service_selectors = [s for s in service_selectors if s]
 
         while True:
             try:
+                # 1) Abrir painel do serviço
                 clicked = False
                 for sel in service_selectors:
                     try:
-                        page.locator(sel).first.click(timeout=5000)
+                        page.locator(sel).first.click(timeout=4000)
                         clicked = True
-                        log.info(f"Clicou serviço com seletor: {sel}")
+                        log.info(f"Clicou serviço: {sel}")
                         break
                     except Exception:
                         continue
 
                 if not clicked:
-                    body_snip = page.inner_text("body")[:500]
-                    log.info(f"Botão '{service_label}' não encontrado. Página: {body_snip}")
+                    log.info(f"Botão '{service_label}' não encontrado")
                     time.sleep(20)
                     continue
 
-                time.sleep(2.5)  # form do serviço abrir
+                # 2) Esperar input do formulário (visível ou forçar)
+                time.sleep(1.5)
+                input_sel = (
+                    "input[placeholder*='Enter Video'], "
+                    "input[placeholder*='Enter Video/Username'], "
+                    "input.form-control[type='search']"
+                )
 
                 url_filled = False
-                for sel in [
-                    "input[placeholder*='URL' i]",
-                    "input[placeholder*='Enter' i]",
-                    "input[placeholder*='link' i]",
-                    "input[placeholder*='TikTok' i]",
-                    "input[type='search']",
-                    "input[type='text']",
-                    "input[type='url']",
-                    "form input:not([type='hidden'])",
-                    "#sid4 input",
-                    ".col-sm input",
-                    "div.card input",
-                    "input:not([type='hidden']):not([type='submit']):not([type='button'])",
-                ]:
+                try:
+                    page.wait_for_selector(
+                        "input[placeholder*='Enter Video']:visible",
+                        timeout=6000,
+                    )
+                    loc = page.locator("input[placeholder*='Enter Video']:visible").first
+                    loc.click()
+                    loc.fill(VIDEO_URL)
+                    url_filled = True
+                    log.info("URL preenchida (input visível)")
+                except Exception:
+                    pass
+
+                if not url_filled:
+                    # force em todos os inputs com esse placeholder (painel hidden)
                     try:
-                        locs = page.locator(sel)
-                        count = min(locs.count(), 10)
-                        for i in range(count):
-                            loc = locs.nth(i)
+                        locs = page.locator(input_sel)
+                        n = locs.count()
+                        log.info(f"Inputs candidatos: {n} — a forçar fill")
+                        for i in range(n):
                             try:
-                                if loc.is_visible(timeout=1500):
-                                    loc.click()
-                                    loc.fill("")
-                                    loc.fill(VIDEO_URL)
-                                    url_filled = True
-                                    log.info(f"URL preenchida com seletor: {sel}")
-                                    break
+                                locs.nth(i).fill(VIDEO_URL, force=True)
+                                url_filled = True
                             except Exception:
                                 continue
                         if url_filled:
-                            break
-                    except Exception:
-                        continue
+                            log.info("URL preenchida com force=True")
+                    except Exception as e:
+                        log.info(f"Force fill falhou: {e}")
 
                 if not url_filled:
-                    try:
-                        inputs_info = page.eval_on_selector_all(
-                            "input",
-                            """els => els.map(e => ({
-                                type: e.type,
-                                name: e.name,
-                                id: e.id,
-                                placeholder: e.placeholder,
-                                class: e.className,
-                                visible: !!(e.offsetWidth || e.offsetHeight || e.getClientRects().length)
-                            }))""",
-                        )
-                        log.info(f"Campo de URL não encontrado. Inputs: {inputs_info}")
-                    except Exception as e:
-                        log.info(f"Campo de URL não encontrado (debug: {e})")
+                    log.info("Não foi possível preencher a URL")
                     time.sleep(15)
                     continue
 
                 time.sleep(0.5)
 
+                # 3) Submit — preferir botão no form ativo
                 submitted = False
                 for sel in [
+                    "form:visible button[type='submit']",
+                    "form:visible button",
+                    "button[type='submit']:visible",
+                    ".btn-primary:visible",
+                    "button:has-text('Search'):visible",
+                    "button:has-text('Submit'):visible",
                     "button[type='submit']",
-                    "form button",
                     ".btn-primary",
-                    ".btn-dark",
-                    "button:has-text('Search')",
-                    "button:has-text('Submit')",
-                    "button:has-text('Send')",
                 ]:
                     try:
-                        page.locator(sel).first.click(timeout=3000)
+                        page.locator(sel).first.click(timeout=3000, force=True)
                         submitted = True
-                        log.info(f"Submit com seletor: {sel}")
+                        log.info(f"Submit: {sel}")
                         break
                     except Exception:
                         continue
 
                 if not submitted:
-                    log.info("Botão submit não encontrado")
-                    time.sleep(15)
-                    continue
+                    # Enter no input
+                    try:
+                        page.locator(input_sel).first.press("Enter", force=True)
+                        submitted = True
+                        log.info("Submit via Enter")
+                    except Exception:
+                        log.info("Submit não encontrado")
+                        time.sleep(15)
+                        continue
 
                 time.sleep(3)
                 result = page.inner_text("body")
 
                 if re.search(r"please wait|seconds?", result, re.I):
-                    wait_match = re.search(r"(\d+)\s*second", result, re.I)
-                    wait_sec = int(wait_match.group(1)) if wait_match else 60
-                    log.info(f"Aguardando {wait_sec}s para próxima tentativa...")
+                    m = re.search(r"(\d+)\s*second", result, re.I)
+                    wait_sec = int(m.group(1)) if m else 60
+                    log.info(f"Aguardando {wait_sec}s...")
                     time.sleep(wait_sec + 5)
                 elif re.search(r"successfully|sent", result, re.I):
-                    log.info("Sucesso! Próxima rodada em 30s")
+                    log.info("Sucesso! Próxima em 30s")
                     time.sleep(30)
                 else:
                     log.info(f"Resposta: {result[:300]}")
                     time.sleep(30)
 
             except Exception as e:
-                log.info(f"Erro no loop principal: {e}")
+                log.info(f"Erro no loop: {e}")
                 time.sleep(30)
 
         browser.close()
 
 
-# ── Main ─────────────────────────────────────────────────────────────────────
 while True:
     try:
         run_bot()
     except Exception as e:
-        log.info(f"Crash: {e} — reiniciando em 60s")
+        log.info(f"Crash: {e} — reinício em 60s")
         time.sleep(60)
