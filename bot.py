@@ -2,8 +2,6 @@ import os
 import sys
 import re
 import threading
-import base64
-from io           import BytesIO
 from base64       import b64decode
 from time         import sleep, time
 from datetime     import datetime
@@ -14,7 +12,7 @@ from requests.auth import HTTPProxyAuth
 from colorama import Fore, init; init()
 
 # ---------------------------------------------------------------------------
-# Config via env vars
+# Config
 # ---------------------------------------------------------------------------
 TIKTOK_URL = os.environ.get("TIKTOK_VIDEO_URL", "").strip()
 SERVICE    = os.environ.get("TIKTOK_SERVICE", "Views").strip()
@@ -30,7 +28,7 @@ HEADERS  = {
     "user-agent": (
         "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
         "AppleWebKit/537.36 (KHTML, like Gecko) "
-        "Chrome/112.0.0.0 Safari/537.36"
+        "Chrome/124.0.0.0 Safari/537.36"
     )
 }
 
@@ -40,7 +38,7 @@ HEADERS  = {
 _proxy_list  = [p.strip() for p in PROXY_RAW.split(",") if p.strip()] if PROXY_RAW else []
 _proxy_index = 0
 
-def next_proxy() -> str | None:
+def next_proxy():
     global _proxy_index
     if not _proxy_list:
         return None
@@ -51,11 +49,11 @@ def next_proxy() -> str | None:
 # ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------
-def log(msg: str) -> None:
+def log(msg):
     ts = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
     print(f"{Fore.CYAN}{ts} {Fore.BLUE}INFO {Fore.MAGENTA}bot -> {Fore.RESET}{msg}", flush=True)
 
-def decode(text) -> str:
+def decode(text):
     try:
         if isinstance(text, str):
             text = text.encode()
@@ -63,33 +61,26 @@ def decode(text) -> str:
     except Exception:
         return text if isinstance(text, str) else text.decode(errors="replace")
 
-def new_session() -> requests.Session:
+def new_session():
     s = requests.Session()
     s.headers.update(HEADERS)
-
     proxy_url = next_proxy()
     if proxy_url:
         parsed = urlparse(proxy_url)
-        host_port = f"{parsed.hostname}:{parsed.port}"
-        log(f"Usando proxy: {host_port}")
-
-        # Passa proxy nas duas formas: via proxies dict E via HTTPProxyAuth
-        # O requests tem um bug conhecido onde credenciais no URL não são
-        # enviadas no header CONNECT para túneis HTTPS — HTTPProxyAuth resolve isso
+        log(f"Usando proxy: {parsed.hostname}:{parsed.port}")
         s.proxies.update({"http": proxy_url, "https": proxy_url})
         if parsed.username and parsed.password:
             s.auth = HTTPProxyAuth(parsed.username, parsed.password)
     else:
-        log("AVISO: sem proxy — IP do Render provavelmente bloqueado pelo zefoy")
-
+        log("Sem proxy — IP directo")
     return s
 
 # ---------------------------------------------------------------------------
-# Captcha API
+# Captcha
 # ---------------------------------------------------------------------------
 CAPTCHA_API = "https://plowsidecaptcha.pythonanywhere.com/captcha"
 
-def solve_captcha_api(image_bytes: bytes) -> str:
+def solve_captcha_api(image_bytes):
     try:
         resp = requests.post(
             CAPTCHA_API,
@@ -103,7 +94,43 @@ def solve_captcha_api(image_bytes: bytes) -> str:
         log(f"Captcha API falhou: {e}")
         return ""
 
-def get_captcha(session: requests.Session) -> dict:
+def get_captcha_image(session, html):
+    """
+    O zefoy carrega a imagem do captcha via JavaScript (src="" vazio no HTML).
+    Tenta varios endpoints conhecidos para obter a imagem directamente.
+    """
+    # Tenta endpoints directos do captcha
+    for endpoint in ["/captcha-image", "/captcha", "/captcha.png",
+                     "/img/captcha", "/image/captcha", "/captcha-img"]:
+        try:
+            r = session.get("https://zefoy.com" + endpoint, timeout=10)
+            if r.status_code == 200 and len(r.content) > 500:
+                log(f"Imagem captcha via {endpoint}: {len(r.content)} bytes")
+                return r.content
+        except Exception:
+            pass
+
+    # Tenta extrair URL do JS inline da pagina
+    js_scripts = re.findall(r"<script[^>]*>(.*?)</script>", html, re.DOTALL)
+    for script in js_scripts:
+        # Procura fetch() ou XMLHttpRequest para imagem
+        urls = re.findall(r'fetch\(["\']([^"\']+)["\']', script)
+        urls += re.findall(r'src\s*=\s*["\']([^"\']+\.(?:png|jpg|gif))["\']', script)
+        urls += re.findall(r'["\'](/[^"\']*(?:captcha|image)[^"\']*)["\']', script)
+        for url in urls:
+            try:
+                full = url if url.startswith("http") else "https://zefoy.com" + url
+                r = session.get(full, timeout=10)
+                if r.status_code == 200 and len(r.content) > 500:
+                    log(f"Imagem via JS URL {url}: {len(r.content)} bytes")
+                    return r.content
+            except Exception:
+                pass
+
+    log("Imagem do captcha nao encontrada via requests — zefoy usa JS dinamico")
+    return None
+
+def get_captcha(session):
     log("Carregando zefoy.com...")
     try:
         resp = session.get(BASE_URL, timeout=30)
@@ -119,59 +146,57 @@ def get_captcha(session: requests.Session) -> dict:
         log(f"Sessao ja ativa! video_key={video_key}")
         return {"already_logged": True, "video_key": video_key}
 
-    if "<title>Just a moment...</title>" in html:
+    if "Just a moment" in html:
         log("Cloudflare challenge — aguardando 60s")
         sleep(60)
         return {}
 
-    log(f"HTML[0:600]: {repr(html[:600])}")
+    # Debug
+    all_inputs = re.findall(r"<input[^>]+>", html)
+    log(f"inputs: {all_inputs[:5]}")
+    all_imgs = re.findall(r"<img[^>]+>", html)
+    log(f"imgs: {all_imgs[:3]}")
 
-    # Debug: mostra todos os inputs, imgs e forms para diagnosticar estrutura do captcha
-    all_inputs = re.findall(r'<input[^>]+>', html)
-    log(f"inputs encontrados: {all_inputs[:10]}")
-    all_imgs = re.findall(r'<img[^>]+>', html)
-    log(f"imgs encontradas: {all_imgs[:5]}")
-    all_forms = re.findall(r'<form[^>]+>', html)
-    log(f"forms encontrados: {all_forms[:5]}")
+    # Novo formato do zefoy (2025+):
+    # <input type="search" name="captchalogin" ...>
+    # <input type="hidden" name="captcha_encoded" value="">
+    # <img id="captcha-img" src="" onload="JSFUNC()">  ← src vazio, preenchido por JS
 
-    captcha_fields = {}
-    for name, value in re.findall(r'<input type="hidden" name="(.*?)" value="(.*?)">', html):
-        captcha_fields[name] = value
-    log(f"hidden fields: {captcha_fields}")
-
-    text_field = re.findall(r'type="text" name="(.*?)" oninput="this\.value=this\.value\.toLowerCase\(\)"', html)
+    # Campo de texto (type="search" ou type="text")
+    text_field = re.findall(r'name="(captchalogin)"', html)
     if not text_field:
-        text_field = re.findall(r'type="text"[^>]+name="([^"]+)"', html)
-    log(f"text field: {text_field}")
+        text_field = re.findall(r'type="(?:text|search)"[^>]+name="([^"]+)"', html)
+    if not text_field:
+        text_field = re.findall(r'name="([^"]+)"[^>]+type="(?:text|search)"', html)
+    log(f"text_field: {text_field}")
 
-    img_match = re.findall(r'<img src="(.*?)" onerror="imgOnError\(\)"', html)
-    if not img_match:
-        img_match = re.findall(r'<img[^>]+src="(/[^"]+\.(?:png|jpg|gif))"', html)
-    log(f"img src: {img_match}")
+    # Campo hidden encoded
+    encoded_field = re.findall(r'name="(captcha_encoded)"', html)
+    if not encoded_field:
+        encoded_field = re.findall(r'type="hidden"[^>]+name="([^"]+)"', html)
+    log(f"encoded_field: {encoded_field}")
 
-    if not captcha_fields or not text_field or not img_match:
-        log("Estrutura HTML nao reconhecida")
+    # Nome da funcao JS que carrega a imagem (muda a cada deploy do zefoy)
+    js_func = re.findall(r'onload="([a-z]+)\(\)"', html)
+    log(f"js onload func: {js_func}")
+
+    if not text_field:
+        log("Campo de texto nao encontrado")
         return {}
 
-    captcha_url = img_match[0]
-    if not captcha_url.startswith("http"):
-        captcha_url = "https://zefoy.com" + captcha_url
-
-    try:
-        img_bytes = session.get(captcha_url, timeout=15).content
-        log(f"Imagem captcha: {len(img_bytes)} bytes")
-    except Exception as e:
-        log(f"Erro ao baixar imagem: {e}")
+    # Tenta obter imagem do captcha
+    img_bytes = get_captcha_image(session, html)
+    if not img_bytes:
         return {}
 
     return {
         "already_logged"    : False,
-        "captcha_fields"    : captcha_fields,
         "captcha_text_field": text_field[0],
+        "captcha_encoded"   : encoded_field[0] if encoded_field else "captcha_encoded",
         "captcha_image"     : img_bytes,
     }
 
-def login(session: requests.Session) -> str | None:
+def login(session):
     data = get_captcha(session)
     if not data:
         return None
@@ -183,9 +208,11 @@ def login(session: requests.Session) -> str | None:
         log("Captcha nao resolvido")
         return None
 
-    payload = dict(data["captcha_fields"])
-    payload[data["captcha_text_field"]] = answer
-    log(f"Enviando captcha: {payload}")
+    payload = {
+        data["captcha_text_field"]: answer,
+        data["captcha_encoded"]   : "",
+    }
+    log(f"Enviando captcha payload: {payload}")
 
     try:
         resp = session.post(BASE_URL, data=payload, timeout=30)
@@ -206,7 +233,7 @@ def login(session: requests.Session) -> str | None:
 # ---------------------------------------------------------------------------
 # Servicos
 # ---------------------------------------------------------------------------
-def get_services(session: requests.Session) -> dict:
+def get_services(session):
     try:
         html = session.get(BASE_URL, timeout=30).text
         services = {}
@@ -221,7 +248,7 @@ def get_services(session: requests.Session) -> dict:
 # ---------------------------------------------------------------------------
 # Envio
 # ---------------------------------------------------------------------------
-def find_and_send(session: requests.Session, video_key: str, endpoint: str) -> str:
+def find_and_send(session, video_key, endpoint):
     try:
         resp = session.post(
             BASE_URL + endpoint,
@@ -238,7 +265,7 @@ def find_and_send(session: requests.Session, video_key: str, endpoint: str) -> s
         return "session_expired"
 
     if "service is currently not working" in video_info:
-        log("Servico offline no zefoy")
+        log("Servico offline")
         return "service_offline"
 
     if "Too many requests" in video_info:
@@ -247,7 +274,7 @@ def find_and_send(session: requests.Session, video_key: str, endpoint: str) -> s
         return "rate_limit"
 
     if "error occurred" in video_info.lower():
-        log(f"Erro do zefoy (bloqueio de IP?): {video_info[:200]}")
+        log(f"Erro zefoy (bloqueio IP?): {video_info[:200]}")
         sleep(120)
         return "ip_blocked"
 
@@ -257,11 +284,10 @@ def find_and_send(session: requests.Session, video_key: str, endpoint: str) -> s
             aweme_id = video_info.split('value="')[1].split('"')[0]
             log(f"Enviando: aweme_id={aweme_id} token={token}")
         except Exception as e:
-            log(f"Erro ao parsear video_info: {e} | {video_info[:300]}")
+            log(f"Erro parse video_info: {e} | {video_info[:300]}")
             return "parse_error"
 
         sleep(3)
-
         try:
             resp2 = session.post(
                 BASE_URL + endpoint,
@@ -269,12 +295,10 @@ def find_and_send(session: requests.Session, video_key: str, endpoint: str) -> s
                 timeout=30,
             )
             result = decode(resp2.text)
-
             if "error occurred" in result.lower():
                 log(f"Bloqueio no segundo POST: {result[:200]}")
                 sleep(120)
                 return "ip_blocked"
-
             if "color:green;" in result or "sent" in result.lower():
                 msg = result.split("color:green;'>")[-1].split("</")[0].strip() if "color:green;" in result else "enviado"
                 log(f"OK: {msg}")
@@ -282,14 +306,14 @@ def find_and_send(session: requests.Session, video_key: str, endpoint: str) -> s
                 log(f"Resposta send: {result[:200]}")
             return "ok"
         except Exception as e:
-            log(f"Erro no send: {e}")
+            log(f"Erro send: {e}")
             return "error"
 
     timer_match = re.findall(r"ltm=(\d+);", video_info)
     if timer_match:
         wait = int(timer_match[0])
         if wait >= 1000:
-            log("IP banido pelo zefoy")
+            log("IP banido")
             return "banned"
         if wait > 0:
             log(f"Cooldown: {wait}s")
@@ -305,7 +329,7 @@ def find_and_send(session: requests.Session, video_key: str, endpoint: str) -> s
     return "unknown"
 
 # ---------------------------------------------------------------------------
-# Health-check HTTP server para Render free tier
+# HTTP health-check
 # ---------------------------------------------------------------------------
 def start_http_server():
     import http.server
@@ -319,14 +343,12 @@ def start_http_server():
     srv.serve_forever()
 
 # ---------------------------------------------------------------------------
-# Main loop
+# Main
 # ---------------------------------------------------------------------------
 def main():
     threading.Thread(target=start_http_server, daemon=True).start()
-
     if not _proxy_list:
-        log("AVISO: PROXY_URL nao definida. IPs de datacenter sao bloqueados pelo zefoy.")
-
+        log("AVISO: PROXY_URL nao definida")
     log(f"TikTok ViewBot | URL: {TIKTOK_URL} | Servico: {SERVICE}")
 
     while True:
@@ -363,18 +385,14 @@ def main():
 
         while consecutive_errors < 5:
             result = find_and_send(session, video_key, endpoint)
-
             if result == "session_expired":
-                log("Sessao expirada — refazendo login")
                 break
             elif result == "banned":
-                log("IP banido — aguardando 5min")
                 sleep(300)
                 break
             elif result == "ip_blocked":
                 consecutive_errors += 1
                 if consecutive_errors >= 3:
-                    log("Bloqueio persistente — reiniciando sessao")
                     break
             elif result in ("ok", "cooldown_done", "rate_limit", "service_offline"):
                 consecutive_errors = 0
