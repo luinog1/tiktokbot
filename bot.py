@@ -72,7 +72,7 @@ def solve_captcha_gemini(img_bytes: bytes) -> str:
     if not GEMINI_KEY:
         return ""
     b64 = base64.b64encode(img_bytes).decode()
-    models = ["gemini-2.5-flash-lite", "gemini-3.5-flash-lite", "gemini-2.5-flash"]
+    models = ["gemini-3.5-flash-lite", "gemini-3.6-flash"]
     for model in models:
         url = (
             f"https://generativelanguage.googleapis.com/v1beta/models/"
@@ -176,11 +176,12 @@ def solve_captcha(img_bytes: bytes) -> str:
 
 
 SERVICE_MAP = {
-    "views": "Video Views",
-    "likes": "Video Likes",
+    "views": "Views",
+    "likes": "Hearts",
+    "hearts": "Hearts",
     "followers": "Followers",
-    "shares": "Video Shares",
-    "favorites": "Video Favorites",
+    "shares": "Shares",
+    "favorites": "Favorites",
 }
 
 
@@ -266,7 +267,7 @@ def run_bot():
             return
 
         # ── Loop principal do serviço ────────────────────────────────────────
-        service_label = SERVICE_MAP.get(SERVICE, "Video Views")
+        service_label = SERVICE_MAP.get(SERVICE, "Views")
         log.info(f"Serviço: {service_label} | URL: {VIDEO_URL}")
 
         if not VIDEO_URL:
@@ -275,25 +276,88 @@ def run_bot():
             browser.close()
             return
 
+        service_selectors = [
+            f"text={service_label}",
+            f"button:has-text('{service_label}')",
+            f".t-{SERVICE}-button",
+            f".t-views-button" if SERVICE in ("views", "view") else None,
+            f"h5:has-text('{service_label}')",
+            f".card-title:has-text('{service_label}')",
+            f"div:has-text('{service_label}') >> button",
+        ]
+        service_selectors = [s for s in service_selectors if s]
+
         while True:
             try:
-                page.click(f"text={service_label}", timeout=8000)
-                time.sleep(1)
-                page.fill("input[type='text'], input[type='search']", VIDEO_URL)
-                page.click("button[type='submit'], .btn-dark, .btn-primary")
-                time.sleep(3)
+                clicked = False
+                for sel in service_selectors:
+                    try:
+                        page.locator(sel).first.click(timeout=5000)
+                        clicked = True
+                        log.info(f"Clicou serviço com seletor: {sel}")
+                        break
+                    except Exception:
+                        continue
 
+                if not clicked:
+                    body_snip = page.inner_text("body")[:500]
+                    log.info(f"Botão '{service_label}' não encontrado. Página: {body_snip}")
+                    time.sleep(20)
+                    continue
+
+                time.sleep(1.5)
+
+                url_filled = False
+                for sel in [
+                    "input[placeholder*='URL' i]",
+                    "input[placeholder*='Enter' i]",
+                    "input[type='search']",
+                    "input[type='text']",
+                    "form input",
+                ]:
+                    try:
+                        loc = page.locator(sel).first
+                        if loc.is_visible(timeout=2000):
+                            loc.fill(VIDEO_URL)
+                            url_filled = True
+                            break
+                    except Exception:
+                        continue
+
+                if not url_filled:
+                    log.info("Campo de URL não encontrado")
+                    time.sleep(15)
+                    continue
+
+                time.sleep(0.5)
+
+                for sel in [
+                    "button[type='submit']",
+                    "form button",
+                    ".btn-primary",
+                    ".btn-dark",
+                    "button:has-text('Search')",
+                    "button:has-text('Submit')",
+                ]:
+                    try:
+                        page.locator(sel).first.click(timeout=3000)
+                        break
+                    except Exception:
+                        continue
+
+                time.sleep(3)
                 result = page.inner_text("body")
-                if "Please wait" in result or "seconds" in result.lower():
+
+                if re.search(r"please wait|seconds?", result, re.I):
                     wait_match = re.search(r"(\d+)\s*second", result, re.I)
                     wait_sec = int(wait_match.group(1)) if wait_match else 60
                     log.info(f"Aguardando {wait_sec}s para próxima tentativa...")
                     time.sleep(wait_sec + 5)
-                elif "successfully" in result.lower():
+                elif re.search(r"successfully|sent", result, re.I):
                     log.info("Sucesso! Próxima rodada em 30s")
                     time.sleep(30)
                 else:
-                    log.info(f"Resposta: {result[:200]}")
+                    log.info(f"Resposta: {result[:300]}")
                     time.sleep(30)
 
             except Exception as e:
