@@ -20,7 +20,7 @@ GEMINI_KEY = os.environ.get("GEMINI_API_KEY", "")
 OPENAI_KEY = os.environ.get("OPENAI_API_KEY", "")
 PORT = int(os.environ.get("PORT", 8080))
 
-# ── HTTP keep-alive (SnapDeploy / Render healthcheck) ─────────────────────────
+# ── HTTP keep-alive ───────────────────────────────────────────────────────────
 class Handler(BaseHTTPRequestHandler):
     def do_GET(self):
         self.send_response(200)
@@ -66,7 +66,6 @@ def _clean_word(text: str) -> str:
 
 
 def solve_captcha_gemini(img_bytes: bytes) -> str:
-    """Gemini Vision via REST (free tier). Sem SDK extra."""
     import requests as req
 
     if not GEMINI_KEY:
@@ -112,7 +111,6 @@ def solve_captcha_gemini(img_bytes: bytes) -> str:
 
 
 def solve_captcha_openai(img_bytes: bytes) -> str:
-    """OpenAI Vision (opcional)."""
     import requests as req
 
     if not OPENAI_KEY:
@@ -164,7 +162,6 @@ def solve_captcha_openai(img_bytes: bytes) -> str:
 
 
 def solve_captcha(img_bytes: bytes) -> str:
-    """Tenta Gemini → OpenAI."""
     word = solve_captcha_gemini(img_bytes)
     if word:
         return word
@@ -211,7 +208,7 @@ def run_bot():
         )
         page = context.new_page()
 
-        # ── Login loop ───────────────────────────────────────────────────────
+        # ── Login ────────────────────────────────────────────────────────────
         logged_in = False
         for attempt in range(1, 6):
             log.info(f"Tentativa de login {attempt}/5")
@@ -266,12 +263,12 @@ def run_bot():
             browser.close()
             return
 
-        # ── Loop principal do serviço ────────────────────────────────────────
+        # ── Loop do serviço ──────────────────────────────────────────────────
         service_label = SERVICE_MAP.get(SERVICE, "Views")
         log.info(f"Serviço: {service_label} | URL: {VIDEO_URL}")
 
         if not VIDEO_URL:
-            log.info("TIKTOK_VIDEO_URL vazia — a aguardar env var")
+            log.info("TIKTOK_VIDEO_URL vazia — define a env var")
             time.sleep(60)
             browser.close()
             return
@@ -281,6 +278,7 @@ def run_bot():
             f"button:has-text('{service_label}')",
             f".t-{SERVICE}-button",
             f".t-views-button" if SERVICE in ("views", "view") else None,
+            f".t-hearts-button" if SERVICE in ("likes", "hearts") else None,
             f"h5:has-text('{service_label}')",
             f".card-title:has-text('{service_label}')",
             f"div:has-text('{service_label}') >> button",
@@ -305,32 +303,65 @@ def run_bot():
                     time.sleep(20)
                     continue
 
-                time.sleep(1.5)
+                time.sleep(2.5)  # form do serviço abrir
 
                 url_filled = False
                 for sel in [
                     "input[placeholder*='URL' i]",
                     "input[placeholder*='Enter' i]",
+                    "input[placeholder*='link' i]",
+                    "input[placeholder*='TikTok' i]",
                     "input[type='search']",
                     "input[type='text']",
-                    "form input",
+                    "input[type='url']",
+                    "form input:not([type='hidden'])",
+                    "#sid4 input",
+                    ".col-sm input",
+                    "div.card input",
+                    "input:not([type='hidden']):not([type='submit']):not([type='button'])",
                 ]:
                     try:
-                        loc = page.locator(sel).first
-                        if loc.is_visible(timeout=2000):
-                            loc.fill(VIDEO_URL)
-                            url_filled = True
+                        locs = page.locator(sel)
+                        count = min(locs.count(), 10)
+                        for i in range(count):
+                            loc = locs.nth(i)
+                            try:
+                                if loc.is_visible(timeout=1500):
+                                    loc.click()
+                                    loc.fill("")
+                                    loc.fill(VIDEO_URL)
+                                    url_filled = True
+                                    log.info(f"URL preenchida com seletor: {sel}")
+                                    break
+                            except Exception:
+                                continue
+                        if url_filled:
                             break
                     except Exception:
                         continue
 
                 if not url_filled:
-                    log.info("Campo de URL não encontrado")
+                    try:
+                        inputs_info = page.eval_on_selector_all(
+                            "input",
+                            """els => els.map(e => ({
+                                type: e.type,
+                                name: e.name,
+                                id: e.id,
+                                placeholder: e.placeholder,
+                                class: e.className,
+                                visible: !!(e.offsetWidth || e.offsetHeight || e.getClientRects().length)
+                            }))""",
+                        )
+                        log.info(f"Campo de URL não encontrado. Inputs: {inputs_info}")
+                    except Exception as e:
+                        log.info(f"Campo de URL não encontrado (debug: {e})")
                     time.sleep(15)
                     continue
 
                 time.sleep(0.5)
 
+                submitted = False
                 for sel in [
                     "button[type='submit']",
                     "form button",
@@ -338,12 +369,20 @@ def run_bot():
                     ".btn-dark",
                     "button:has-text('Search')",
                     "button:has-text('Submit')",
+                    "button:has-text('Send')",
                 ]:
                     try:
                         page.locator(sel).first.click(timeout=3000)
+                        submitted = True
+                        log.info(f"Submit com seletor: {sel}")
                         break
                     except Exception:
                         continue
+
+                if not submitted:
+                    log.info("Botão submit não encontrado")
+                    time.sleep(15)
+                    continue
 
                 time.sleep(3)
                 result = page.inner_text("body")
