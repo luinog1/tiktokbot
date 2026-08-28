@@ -72,7 +72,7 @@ def solve_captcha_gemini(img_bytes: bytes) -> str:
     if not GEMINI_KEY:
         return ""
     b64 = base64.b64encode(img_bytes).decode()
-    models = ["gemini-2.0-flash", "gemini-2.0-flash-lite"]
+    models = ["gemini-2.5-flash-lite", "gemini-3.5-flash-lite", "gemini-2.5-flash"]
     for model in models:
         url = (
             f"https://generativelanguage.googleapis.com/v1beta/models/"
