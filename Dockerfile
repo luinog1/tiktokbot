@@ -1,5 +1,4 @@
-# Imagem oficial Playwright — já tem Chromium + todas as deps de sistema
-FROM mcr.microsoft.com/playwright/python:v1.49.0-jammy
+FROM mcr.microsoft.com/playwright/python:v1.62.0-jammy
 
 ENV DEBIAN_FRONTEND=noninteractive
 ENV PORT=8080
