@@ -39,15 +39,24 @@ threading.Thread(target=start_http, daemon=True).start()
 
 
 def keep_alive_ping():
-    """Faz self-ping a cada 20s para evitar 'slept due to inactivity'."""
+    """
+    Self-ping a cada 25s para evitar 'slept due to inactivity' no SnapDeploy/Back4App.
+    Tenta primeiro localhost; se falhar, usa a URL pública via env RENDER_EXTERNAL_URL.
+    """
     import requests as req
-    time.sleep(10)
+    public_url = os.environ.get("RENDER_EXTERNAL_URL", "")
+    time.sleep(15)
     while True:
         try:
-            req.get(f"http://localhost:{PORT}/ping", timeout=5)
+            req.get(f"http://localhost:{PORT}/", timeout=5)
         except Exception:
             pass
-        time.sleep(20)
+        if public_url:
+            try:
+                req.get(public_url, timeout=8)
+            except Exception:
+                pass
+        time.sleep(25)
 
 
 threading.Thread(target=keep_alive_ping, daemon=True).start()
@@ -290,16 +299,16 @@ def get_timer_from_page(page) -> int:
 
 def run_service_cycle(page, service_label: str, video_url: str, service_key: str = "") -> bool:
     """
-    Executa um ciclo completo do serviço:
-      1. Preenche URL no input do container activo
-      2. Clica btn-primary (Search/Verificar)
-      3. Aguarda 3s
-      4. Clica btn-dark (Send/Submit real)
-    Retorna True se o ciclo completou sem erro.
+    Flow correto do zefoy:
+      1. Preencher URL
+      2. Click Search (btn-primary) — dispara AJAX que valida URL e devolve o count
+      3. Esperar response HTTP do AJAX (page.expect_response)
+      4. Se timer → return None
+      5. Select quantidade se Favorites
+      6. Click Send (btn-dark) — submete de facto
     """
     time.sleep(1.5)
 
-    # Container activo (o painel aberto pelo clique no serviço)
     container = get_active_container(page)
 
     # --- Passo 1: preencher URL ---
@@ -311,17 +320,17 @@ def run_service_cycle(page, service_label: str, video_url: str, service_key: str
         )
         inp = container.locator("input").first
         inp.click(timeout=3000)
+        inp.triple_click(timeout=3000)   # selecionar texto existente
         inp.fill(video_url)
         url_filled = True
         log.info("URL preenchida no container activo")
     except Exception:
         pass
 
-    # Fallback: input visível com placeholder
     if not url_filled:
         try:
-            page.wait_for_selector("input[placeholder*='Enter Video']:visible", timeout=5000)
-            loc = page.locator("input[placeholder*='Enter Video']:visible").first
+            page.wait_for_selector("input[placeholder*=\'Enter Video\']:visible", timeout=5000)
+            loc = page.locator("input[placeholder*=\'Enter Video\']:visible").first
             loc.click()
             loc.fill(video_url)
             url_filled = True
@@ -329,16 +338,14 @@ def run_service_cycle(page, service_label: str, video_url: str, service_key: str
         except Exception:
             pass
 
-    # Fallback force
     if not url_filled:
         try:
             locs = page.locator(
-                "input[placeholder*='Enter Video'], "
-                "input[placeholder*='Enter Video/Username'], "
-                "input.form-control[type='search']"
+                "input[placeholder*=\'Enter Video\'], "
+                "input[placeholder*=\'Enter Video/Username\'], "
+                "input.form-control[type=\'search\']"
             )
             n = locs.count()
-            log.info(f"Force fill em {n} inputs")
             for i in range(n):
                 try:
                     locs.nth(i).fill(video_url, force=True)
@@ -354,61 +361,66 @@ def run_service_cycle(page, service_label: str, video_url: str, service_key: str
         log.info("Não foi possível preencher a URL")
         return False
 
-    time.sleep(0.5)
+    time.sleep(0.3)
 
-    # --- Passo 2: btn-primary (Search) ---
-    searched = False
+    # --- Passo 2: Search (btn-primary) + aguardar AJAX via expect_response ---
     search_sels = [
         "div.col-sm-5.col-xs-12.p-1.container:not(.nonec) button.btn.btn-primary",
-        "div.col-sm-5.col-xs-12.p-1.container:not(.nonec) button[type='submit']",
+        "div.col-sm-5.col-xs-12.p-1.container:not(.nonec) button[type=\'submit\']",
         "form:visible button.btn-primary",
-        "form:visible button[type='submit']",
         "button.btn-primary:visible",
-        "button[type='submit']:visible",
         "button.btn-primary",
-        "button[type='submit']",
+        "button[type=\'submit\']",
     ]
+
+    searched = False
+    ajax_response_text = ""
+
     for sel in search_sels:
         try:
-            page.locator(sel).first.click(timeout=3000, force=True)
-            log.info(f"Search (btn-primary): {sel}")
+            # Interceptar a response do AJAX que o zefoy dispara após o Search
+            with page.expect_response(
+                lambda r: "zefoy.com" in r.url and r.request.method == "POST",
+                timeout=10000,
+            ) as resp_info:
+                page.locator(sel).first.click(timeout=3000, force=True)
+                log.info(f"Search clicado: {sel}")
+            response = resp_info.value
+            ajax_response_text = response.text()
+            log.info(f"AJAX Search response ({response.status}): {ajax_response_text[:120]}")
             searched = True
             break
         except Exception:
-            continue
+            # Se expect_response falhar (sem AJAX), ainda contar como clicado
+            try:
+                page.locator(sel).first.click(timeout=2000, force=True)
+                log.info(f"Search sem AJAX intercept: {sel}")
+                searched = True
+                time.sleep(4)  # wait manual
+                break
+            except Exception:
+                continue
 
     if not searched:
         try:
-            page.locator("input[placeholder*='Enter Video']").first.press("Enter", force=True)
+            page.locator("input[placeholder*=\'Enter Video\']").first.press("Enter", force=True)
             log.info("Search via Enter")
             searched = True
+            time.sleep(4)
         except Exception:
             log.info("Search falhou")
             return False
 
-    # Aguardar AJAX do zefoy processar o Search (o btn-dark só fica válido após isso)
-    # O zefoy faz request interno após o Search — aguardar network idle
-    try:
-        page.wait_for_load_state("networkidle", timeout=8000)
-    except Exception:
-        time.sleep(4)  # fallback se timeout
+    # --- Verificar timer na response AJAX ou na página ---
+    pre_timer = 0
+    if ajax_response_text:
+        pre_timer = parse_timer(ajax_response_text)
+    if pre_timer == 0:
+        pre_timer = get_timer_from_page(page)
 
-    # Verificar se há timer já aqui (rate limit antes do send)
-    pre_timer = get_timer_from_page(page)
     if pre_timer > 0:
-        log.info(f"Rate limit antes do send: {pre_timer}s")
-        return None  # sinaliza "aguardar" sem contar como falha
-
-    # Aguardar o btn-dark aparecer/ficar ativo no container
-    try:
-        page.wait_for_selector(
-            "div.col-sm-5.col-xs-12.p-1.container:not(.nonec) button.btn.btn-dark",
-            timeout=6000,
-            state="visible",
-        )
-        log.info("btn-dark visível — pronto para Send")
-    except Exception:
-        log.info("btn-dark wait timeout — tentando na mesma")
+        log.info(f"Rate limit: {pre_timer}s")
+        return None
 
     # --- Passo 2.5: select de quantidade (apenas Favorites) ---
     if service_key in {"favorites"}:
@@ -427,8 +439,7 @@ def run_service_cycle(page, service_label: str, video_url: str, service_key: str
         except Exception as e:
             log.info(f"Select limit erro: {e}")
 
-    # --- Passo 3: btn-dark (Send — o submit real) ---
-    sent = False
+    # --- Passo 3: Send (btn-dark) + aguardar AJAX de confirmação ---
     send_sels = [
         "div.col-sm-5.col-xs-12.p-1.container:not(.nonec) button.btn.btn-dark",
         "div.col-sm-5.col-xs-12.p-1.container:not(.nonec) button.btn-dark",
@@ -438,17 +449,34 @@ def run_service_cycle(page, service_label: str, video_url: str, service_key: str
         "button.btn-dark",
         ".btn-dark",
     ]
+
+    sent = False
+    send_response_text = ""
+
     for sel in send_sels:
         try:
-            page.locator(sel).first.click(timeout=3000, force=True)
-            log.info(f"Send (btn-dark): {sel}")
+            with page.expect_response(
+                lambda r: "zefoy.com" in r.url and r.request.method == "POST",
+                timeout=10000,
+            ) as resp_info:
+                page.locator(sel).first.click(timeout=3000, force=True)
+                log.info(f"Send clicado: {sel}")
+            response = resp_info.value
+            send_response_text = response.text()
+            log.info(f"AJAX Send response ({response.status}): {send_response_text[:120]}")
             sent = True
             break
         except Exception:
-            continue
+            try:
+                page.locator(sel).first.click(timeout=2000, force=True)
+                log.info(f"Send sem AJAX intercept: {sel}")
+                sent = True
+                time.sleep(3)
+                break
+            except Exception:
+                continue
 
     if not sent:
-        # btn-dark pode não existir ainda; verificar body
         body = page.inner_text("body")
         if re.search(r"successfully|sent|success", body, re.I):
             log.info("Sucesso directo (sem btn-dark)")
@@ -456,10 +484,18 @@ def run_service_cycle(page, service_label: str, video_url: str, service_key: str
         else:
             snippet = body[:200].replace("\n", " ")
             log.info(f"btn-dark não encontrado. Body: {snippet}")
-            # Não é falha fatal — pode ser que o zefoy mostre timer logo após search
             return None
 
-    time.sleep(3)
+    # Confirmar resultado pelo texto da response
+    if send_response_text:
+        if re.search(r"successfully|success|sent|ok", send_response_text, re.I):
+            log.info("Confirmado pelo servidor — sucesso!")
+        elif re.search(r"please wait|wait|timer", send_response_text, re.I):
+            log.info(f"Servidor devolveu timer: {send_response_text[:80]}")
+        else:
+            log.info(f"Resposta do servidor: {send_response_text[:80]}")
+
+    time.sleep(2)
     return True
 
 
