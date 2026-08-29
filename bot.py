@@ -273,7 +273,7 @@ def get_timer_from_page(page) -> int:
         return 0
 
 
-def run_service_cycle(page, service_label: str, video_url: str) -> bool:
+def run_service_cycle(page, service_label: str, video_url: str, service_key: str = "") -> bool:
     """
     Executa um ciclo completo do serviço:
       1. Preenche URL no input do container activo
@@ -379,6 +379,23 @@ def run_service_cycle(page, service_label: str, video_url: str) -> bool:
     if pre_timer > 0:
         log.info(f"Rate limit antes do send: {pre_timer}s")
         return None  # sinaliza "aguardar" sem contar como falha
+
+    # --- Passo 2.5: select de quantidade (apenas Favorites) ---
+    if service_key in {"favorites"}:
+        try:
+            container = get_active_container(page)
+            sel_loc = container.locator("select")
+            if sel_loc.count() > 0:
+                sel_loc.first.select_option("25")
+                log.info("Select limit = 25")
+            else:
+                all_sel = page.locator("select:visible")
+                if all_sel.count() > 0:
+                    all_sel.first.select_option("25")
+                    log.info("Select limit = 25 (fallback)")
+            time.sleep(0.5)
+        except Exception as e:
+            log.info(f"Select limit erro: {e}")
 
     # --- Passo 3: btn-dark (Send — o submit real) ---
     sent = False
@@ -522,7 +539,7 @@ def run_bot():
                 consecutive_failures = 0
 
                 # 2) Preencher URL → Search → Send
-                result = run_service_cycle(page, service_label, VIDEO_URL)
+                result = run_service_cycle(page, service_label, VIDEO_URL, service_key=SERVICE)
 
                 # 3) Ler timer e aguardar
                 time.sleep(1)
