@@ -166,12 +166,28 @@ SERVICE_CSS = {
     "favorites": ".t-favorites-button",
 }
 
+# XPaths absolutos do zefoy (fallback robusto)
+# div[7] = favorites, div[5] = views, div[3] = hearts, etc.
+SERVICE_DIV = {
+    "followers": "6",
+    "hearts":    "7",
+    "likes":     "7",
+    "views":     "9",
+    "shares":    "10",
+    "favorites": "11",
+}
+
+
+def get_active_container(page):
+    """
+    Retorna o locator do container do serviço activo (o que não tem classe 'nonec').
+    Este é o painel que o zefoy abre após clicar no botão do serviço.
+    """
+    return page.locator("div.col-sm-5.col-xs-12.p-1.container:not(.nonec)").first
+
 
 def click_service_button(page, service_label: str, css_btn: str) -> bool:
-    """
-    Tenta abrir o painel do serviço. Estratégias em cascata.
-    Retorna True se conseguiu clicar.
-    """
+    """Tenta abrir o painel do serviço. Cascata de seletores + JS fallback."""
     selectors = []
     if css_btn:
         selectors.append(css_btn)
@@ -186,7 +202,6 @@ def click_service_button(page, service_label: str, css_btn: str) -> bool:
     for sel in selectors:
         try:
             loc = page.locator(sel).first
-            # Scroll para o elemento e aguarda ser attached
             loc.scroll_into_view_if_needed(timeout=3000)
             loc.click(timeout=4000)
             log.info(f"Clicou serviço: {sel}")
@@ -194,14 +209,14 @@ def click_service_button(page, service_label: str, css_btn: str) -> bool:
         except Exception:
             continue
 
-    # Último recurso: JS click em qualquer elemento visível com o texto
+    # JS fallback
     try:
         page.evaluate(f"""
             const els = Array.from(document.querySelectorAll('button, .btn, a'));
             const target = els.find(e => e.textContent.trim().includes('{service_label}'));
             if (target) target.click();
         """)
-        log.info(f"Clicou serviço via JS evaluate: {service_label}")
+        log.info(f"Clicou serviço via JS: {service_label}")
         return True
     except Exception as e:
         log.info(f"JS click falhou: {e}")
@@ -209,40 +224,106 @@ def click_service_button(page, service_label: str, css_btn: str) -> bool:
     return False
 
 
-def fill_and_submit(page, video_url: str) -> bool:
+def parse_timer(text: str) -> int:
     """
-    Preenche a URL e faz submit. Retorna True se submeteu.
+    Extrai segundos totais do timer do zefoy.
+    Formatos possíveis:
+      "Please wait 0 minute(s) 24 second(s) for your next submit"
+      "Please wait 24 seconds"
+      "Aguardando 24s"
+    Retorna 0 se não encontrar.
     """
-    time.sleep(1.5)
+    if not re.search(r"please wait|seconds?", text, re.I):
+        return 0
 
-    INPUT_SEL = (
-        "input[placeholder*='Enter Video'], "
-        "input[placeholder*='Enter Video/Username'], "
-        "input.form-control[type='search']"
-    )
+    # Formato com minutos e segundos: "X minute(s) Y second(s)"
+    m = re.search(r"(\d+)\s*minute[s(]*\)?.*?(\d+)\s*second", text, re.I)
+    if m:
+        return int(m.group(1)) * 60 + int(m.group(2))
 
-    url_filled = False
+    # Só segundos: "Y second(s)"
+    m = re.search(r"(\d+)\s*second", text, re.I)
+    if m:
+        return int(m.group(1))
 
-    # Tentar input visível primeiro
+    return 0
+
+
+def get_timer_from_page(page) -> int:
+    """Lê o timer do span.br ou do body."""
     try:
-        page.wait_for_selector(
-            "input[placeholder*='Enter Video']:visible",
-            timeout=6000,
-        )
-        loc = page.locator("input[placeholder*='Enter Video']:visible").first
-        loc.click()
-        loc.fill(video_url)
-        url_filled = True
-        log.info("URL preenchida (input visível)")
+        # Tentar span.br primeiro (mais preciso)
+        spans = page.locator("span.br").all()
+        for span in spans:
+            try:
+                t = span.inner_text(timeout=500)
+                secs = parse_timer(t)
+                if secs > 0:
+                    return secs
+            except Exception:
+                continue
     except Exception:
         pass
 
-    # Fallback: force fill em todos os candidatos
+    # Fallback: body completo
+    try:
+        body = page.inner_text("body")
+        return parse_timer(body)
+    except Exception:
+        return 0
+
+
+def run_service_cycle(page, service_label: str, video_url: str) -> bool:
+    """
+    Executa um ciclo completo do serviço:
+      1. Preenche URL no input do container activo
+      2. Clica btn-primary (Search/Verificar)
+      3. Aguarda 3s
+      4. Clica btn-dark (Send/Submit real)
+    Retorna True se o ciclo completou sem erro.
+    """
+    time.sleep(1.5)
+
+    # Container activo (o painel aberto pelo clique no serviço)
+    container = get_active_container(page)
+
+    # --- Passo 1: preencher URL ---
+    url_filled = False
+    try:
+        page.wait_for_selector(
+            "div.col-sm-5.col-xs-12.p-1.container:not(.nonec) input",
+            timeout=6000,
+        )
+        inp = container.locator("input").first
+        inp.click(timeout=3000)
+        inp.fill(video_url)
+        url_filled = True
+        log.info("URL preenchida no container activo")
+    except Exception:
+        pass
+
+    # Fallback: input visível com placeholder
     if not url_filled:
         try:
-            locs = page.locator(INPUT_SEL)
+            page.wait_for_selector("input[placeholder*='Enter Video']:visible", timeout=5000)
+            loc = page.locator("input[placeholder*='Enter Video']:visible").first
+            loc.click()
+            loc.fill(video_url)
+            url_filled = True
+            log.info("URL preenchida (input visível)")
+        except Exception:
+            pass
+
+    # Fallback force
+    if not url_filled:
+        try:
+            locs = page.locator(
+                "input[placeholder*='Enter Video'], "
+                "input[placeholder*='Enter Video/Username'], "
+                "input.form-control[type='search']"
+            )
             n = locs.count()
-            log.info(f"Inputs candidatos: {n} — forçando fill")
+            log.info(f"Force fill em {n} inputs")
             for i in range(n):
                 try:
                     locs.nth(i).fill(video_url, force=True)
@@ -260,50 +341,79 @@ def fill_and_submit(page, video_url: str) -> bool:
 
     time.sleep(0.5)
 
-    # Submit
-    SUBMIT_SELS = [
+    # --- Passo 2: btn-primary (Search) ---
+    searched = False
+    search_sels = [
+        "div.col-sm-5.col-xs-12.p-1.container:not(.nonec) button.btn.btn-primary",
+        "div.col-sm-5.col-xs-12.p-1.container:not(.nonec) button[type='submit']",
+        "form:visible button.btn-primary",
         "form:visible button[type='submit']",
-        "form:visible button",
+        "button.btn-primary:visible",
         "button[type='submit']:visible",
-        ".btn-dark:visible",
-        ".btn-primary:visible",
-        "button:has-text('Search'):visible",
-        "button:has-text('Send'):visible",
+        "button.btn-primary",
         "button[type='submit']",
-        ".btn-dark",
-        ".btn-primary",
     ]
-
-    for sel in SUBMIT_SELS:
+    for sel in search_sels:
         try:
             page.locator(sel).first.click(timeout=3000, force=True)
-            log.info(f"Submit: {sel}")
-            return True
+            log.info(f"Search (btn-primary): {sel}")
+            searched = True
+            break
         except Exception:
             continue
 
-    # Último recurso: Enter no input
-    try:
-        page.locator(INPUT_SEL).first.press("Enter", force=True)
-        log.info("Submit via Enter")
-        return True
-    except Exception:
-        log.info("Submit falhou — nenhum botão encontrado")
-        return False
+    if not searched:
+        try:
+            page.locator("input[placeholder*='Enter Video']").first.press("Enter", force=True)
+            log.info("Search via Enter")
+            searched = True
+        except Exception:
+            log.info("Search falhou")
+            return False
 
+    # Aguardar resposta do search (zefoy processa e mostra timer ou READY)
+    time.sleep(3)
 
-def wait_for_timer(page) -> int:
-    """
-    Lê o timer do zefoy na página. Retorna segundos a aguardar (0 se não encontrar).
-    """
-    try:
+    # Verificar se há timer já aqui (rate limit antes do send)
+    pre_timer = get_timer_from_page(page)
+    if pre_timer > 0:
+        log.info(f"Rate limit antes do send: {pre_timer}s")
+        return None  # sinaliza "aguardar" sem contar como falha
+
+    # --- Passo 3: btn-dark (Send — o submit real) ---
+    sent = False
+    send_sels = [
+        "div.col-sm-5.col-xs-12.p-1.container:not(.nonec) button.btn.btn-dark",
+        "div.col-sm-5.col-xs-12.p-1.container:not(.nonec) button.btn-dark",
+        "form:visible button.btn-dark",
+        "button.btn-dark:visible",
+        ".btn-dark:visible",
+        "button.btn-dark",
+        ".btn-dark",
+    ]
+    for sel in send_sels:
+        try:
+            page.locator(sel).first.click(timeout=3000, force=True)
+            log.info(f"Send (btn-dark): {sel}")
+            sent = True
+            break
+        except Exception:
+            continue
+
+    if not sent:
+        # btn-dark pode não existir ainda; verificar body
         body = page.inner_text("body")
-        if re.search(r"please wait|seconds?", body, re.I):
-            m = re.search(r"(\d+)\s*second", body, re.I)
-            return int(m.group(1)) if m else 60
-    except Exception:
-        pass
-    return 0
+        if re.search(r"successfully|sent|success", body, re.I):
+            log.info("Sucesso directo (sem btn-dark)")
+            sent = True
+        else:
+            snippet = body[:200].replace("\n", " ")
+            log.info(f"btn-dark não encontrado. Body: {snippet}")
+            # Não é falha fatal — pode ser que o zefoy mostre timer logo após search
+            return None
+
+    time.sleep(3)
+    return True
 
 
 def run_bot():
@@ -387,62 +497,66 @@ def run_bot():
 
         # ── Loop principal ────────────────────────────────────────────────────
         consecutive_failures = 0
-        MAX_FAILURES = 5  # após 5 falhas → renavegar a página
+        MAX_FAILURES = 5
 
         while True:
             try:
-                # Se muitas falhas seguidas, recarregar a página (sessão pode ter expirado)
+                # Recarregar após muitas falhas (sessão pode ter expirado)
                 if consecutive_failures >= MAX_FAILURES:
                     log.info("Muitas falhas — recarregando zefoy.com...")
                     page.goto("https://zefoy.com", wait_until="domcontentloaded", timeout=60000)
                     time.sleep(3)
-                    # Verificar se precisa de novo login
                     if "captcha" in page.content().lower():
                         log.info("Sessão expirou — reiniciando bot completo")
                         browser.close()
-                        return  # outer while True fará restart
+                        return
                     consecutive_failures = 0
 
-                # 1) Clicar botão do serviço
+                # 1) Clicar botão do serviço para abrir o painel
                 if not click_service_button(page, service_label, css_btn):
                     log.info(f"Botão '{service_label}' não encontrado")
                     consecutive_failures += 1
                     time.sleep(20)
                     continue
 
-                consecutive_failures = 0  # reset ao clicar com sucesso
+                consecutive_failures = 0
 
-                # 2) Preencher URL e submeter
-                if not fill_and_submit(page, VIDEO_URL):
-                    time.sleep(15)
-                    continue
+                # 2) Preencher URL → Search → Send
+                result = run_service_cycle(page, service_label, VIDEO_URL)
 
-                # 3) Aguardar resposta
-                time.sleep(3)
-                wait_sec = wait_for_timer(page)
+                # 3) Ler timer e aguardar
+                time.sleep(1)
+                wait_sec = get_timer_from_page(page)
 
                 if wait_sec > 0:
-                    log.info(f"Aguardando {wait_sec}s...")
-                    # Durante o timer: monitorar a página para saber quando o botão volta
-                    deadline = time.time() + wait_sec + 5
+                    log.info(f"Aguardando {wait_sec}s (cooldown zefoy)...")
+                    # Monitorar countdown ativo
+                    deadline = time.time() + wait_sec + 6
                     while time.time() < deadline:
                         time.sleep(5)
-                        # Verificar se o timer sumiu (botão activo de novo)
-                        remaining = wait_for_timer(page)
-                        if remaining == 0:
-                            log.info("Timer expirou — tentando de novo")
+                        remaining = int(deadline - time.time())
+                        if remaining <= 0:
                             break
-                        log.info(f"Aguardando... {int(deadline - time.time())}s restantes")
+                        current_timer = get_timer_from_page(page)
+                        if current_timer == 0:
+                            log.info("Timer expirou — próxima rodada")
+                            break
+                        log.info(f"Cooldown: {current_timer}s restantes")
+
+                elif result is True:
+                    # Sem timer → sucesso imediato
+                    body = page.inner_text("body")
+                    if re.search(r"successfully|sent|success", body, re.I):
+                        log.info("Sucesso confirmado! Próxima em 30s")
+                    else:
+                        log.info("Enviado (sem timer). Próxima em 30s")
+                    time.sleep(30)
 
                 else:
-                    body = page.inner_text("body")
-                    if re.search(r"successfully|sent", body, re.I):
-                        log.info("Sucesso! Próxima em 30s")
-                        time.sleep(30)
-                    else:
-                        snippet = body[:300].replace("\n", " ")
-                        log.info(f"Resposta inesperada: {snippet}")
-                        time.sleep(30)
+                    # result é None ou False
+                    log.info("Ciclo incompleto — retry em 20s")
+                    consecutive_failures += 1
+                    time.sleep(20)
 
             except Exception as e:
                 log.info(f"Erro no loop: {e}")
