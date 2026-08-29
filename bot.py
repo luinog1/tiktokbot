@@ -37,6 +37,21 @@ def start_http():
 
 threading.Thread(target=start_http, daemon=True).start()
 
+
+def keep_alive_ping():
+    """Faz self-ping a cada 20s para evitar 'slept due to inactivity'."""
+    import requests as req
+    time.sleep(10)
+    while True:
+        try:
+            req.get(f"http://localhost:{PORT}/ping", timeout=5)
+        except Exception:
+            pass
+        time.sleep(20)
+
+
+threading.Thread(target=keep_alive_ping, daemon=True).start()
+
 from playwright.sync_api import sync_playwright
 
 
@@ -371,14 +386,29 @@ def run_service_cycle(page, service_label: str, video_url: str, service_key: str
             log.info("Search falhou")
             return False
 
-    # Aguardar resposta do search (zefoy processa e mostra timer ou READY)
-    time.sleep(3)
+    # Aguardar AJAX do zefoy processar o Search (o btn-dark só fica válido após isso)
+    # O zefoy faz request interno após o Search — aguardar network idle
+    try:
+        page.wait_for_load_state("networkidle", timeout=8000)
+    except Exception:
+        time.sleep(4)  # fallback se timeout
 
     # Verificar se há timer já aqui (rate limit antes do send)
     pre_timer = get_timer_from_page(page)
     if pre_timer > 0:
         log.info(f"Rate limit antes do send: {pre_timer}s")
         return None  # sinaliza "aguardar" sem contar como falha
+
+    # Aguardar o btn-dark aparecer/ficar ativo no container
+    try:
+        page.wait_for_selector(
+            "div.col-sm-5.col-xs-12.p-1.container:not(.nonec) button.btn.btn-dark",
+            timeout=6000,
+            state="visible",
+        )
+        log.info("btn-dark visível — pronto para Send")
+    except Exception:
+        log.info("btn-dark wait timeout — tentando na mesma")
 
     # --- Passo 2.5: select de quantidade (apenas Favorites) ---
     if service_key in {"favorites"}:
